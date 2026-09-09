@@ -1,0 +1,48 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+
+# Python environment and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Test, analysis and coverage output
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+.hypothesis/
+.pyright/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Locally compiled PoW solvers (source and WASM are tracked)
+freetokenapi/deepseek/pow_solver.exe
+freetokenapi/deepseek/pow_solver
+
+# Runtime logs, optional in-project caches and temporary files
+*.log
+*.log.*
+*.tmp
+.cache/
+/cache/
+/logs/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent settings, sessions and native-document snapshots
+# Shared extension source lives in pi-extension/, not these client data directories.
+.pi/
+.claude/

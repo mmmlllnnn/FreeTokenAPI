@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.12"
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHON_DOTENV_DISABLED: "1"
+      DEEPSEEK_TOKENS: ""
+      QWEN_TOKENS: ""
+      FREETOKENAPI_LOG_FILE: ""
+      FREETOKENAPI_CACHE_DISABLED: "1"
+      FREETOKENAPI_USAGE_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Lint
+        run: python -m ruff check .
+      - name: Python and protocol regression tests
+        run: python -B -m pytest -q -p no:cacheprovider
+      - name: Pi extension tests
+        run: node --test tests/pi-native-files.test.mjs

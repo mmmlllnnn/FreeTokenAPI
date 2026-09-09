@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+httpx
+pydantic>=2,<3
+python-dotenv
+pillow
