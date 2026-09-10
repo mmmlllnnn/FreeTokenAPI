@@ -107,6 +107,32 @@ class DeepSeekClient:
         except (httpx.HTTPError, ValueError):
             return False
 
+    async def get_model_configs(self) -> list[dict]:
+        """Fetch this account's official web capabilities, not paid-API models."""
+        try:
+            response = await self.http.get(
+                "/api/v0/client/settings", params={"did": self.device_id, "scope": "model"},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise DeepSeekError(exc.response.status_code, "DeepSeek model configuration request failed") from exc
+        except httpx.HTTPError as exc:
+            raise DeepSeekError(502, "DeepSeek model configuration request failed: network error") from exc
+        except ValueError as exc:
+            raise DeepSeekError(502, "DeepSeek model configuration returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise DeepSeekError(502, "DeepSeek model configuration returned an invalid envelope")
+        if not payload.get("code") and not isinstance(payload.get("data"), dict):
+            raise DeepSeekError(502, "DeepSeek model configuration returned an invalid data envelope")
+        data = self._biz(payload)
+        settings = data.get("settings") if isinstance(data, dict) else None
+        field = settings.get("model_configs") if isinstance(settings, dict) else None
+        configs = field.get("value") if isinstance(field, dict) else None
+        if not isinstance(configs, list):
+            raise DeepSeekError(502, "DeepSeek model configuration is missing model_configs.value")
+        return configs
+
     async def get_user(self) -> dict:
         resp = await self._post("/api/v0/users", None)
         biz = self._biz(resp)

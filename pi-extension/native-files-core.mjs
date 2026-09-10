@@ -43,19 +43,13 @@ export function isAdapterModel(model) {
 
 export function supportsNativeFiles(model) {
   return isAdapterModel(model) && (
-    /^qwen/i.test(model.id) || /^deepseek-v4-flash(?:-thinking)?$/.test(model.id)
+    /^qwen/i.test(model.id) || /^deepseek-web(?:-thinking)?$/.test(model.id)
   );
 }
 
 export function nativeFileSupportError(model) {
-  if (!isAdapterModel(model)) return "Select a Qwen or DeepSeek Flash model under the local free-token-api provider to attach documents.";
-  if (/^deepseek-v4-vision(?:-thinking)?$/.test(model.id)) {
-    return "DeepSeek Vision accepts images, not PDF/documents. Use DeepSeek Flash or Qwen for documents; clear active documents before switching to Vision for images.";
-  }
-  if (/^deepseek-v4-pro(?:-thinking)?$/.test(model.id)) {
-    return "DeepSeek Pro file attachments are not supported by this adapter. Use DeepSeek Flash or Qwen for documents.";
-  }
-  return "Native documents are supported by Qwen and DeepSeek Flash in this adapter. Select a supported model.";
+  if (!isAdapterModel(model)) return "Select a Qwen or DeepSeek Web model under the local free-token-api provider to attach documents.";
+  return "Select deepseek-web, deepseek-web-thinking, or a Qwen model. DeepSeek attachment support follows the account's current web capabilities; old model IDs are not supported.";
 }
 
 export function resolveLocalPath(value, cwd) {

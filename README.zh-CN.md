@@ -1,6 +1,6 @@
 # FreeTokenAPI
 
-**版本 1.0.0** · [English](README.md) · [更新记录](CHANGELOG.md)
+**版本 2.0.0** · [English](README.md) · [更新记录](CHANGELOG.md)
 
 把你自己的 **DeepSeek / Qwen 网页账号**接入本地 API，提供 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种兼容接口，支持流式回复、客户端工具调用、附件和网页后端原生搜索。
 
@@ -93,13 +93,26 @@ API Key 填 **`local`**。它只是客户端必填项占位符，不是访问密
 | --- | --- | --- |
 | `qwen3.8-max` | `text`、`image` | 推荐用于 Qwen 文本、图片对话 |
 | `qwen3.7-plus` | `text`、`image` | 以账号实际可用性为准 |
-| `deepseek-v4-flash-thinking` | `text` | DeepSeek 文本 / 思考；无 thinking 后缀的 Flash 默认关闭思考 |
-| `deepseek-v4-vision-thinking` | `text`、`image` | DeepSeek 图片优先选此模型 |
-| `deepseek-v4-pro-thinking` | `text` | 当前适配器拒绝 Pro 附件 |
+| `deepseek-web` | 以接口声明为准：`text`、`image` | 统一网页模型，默认关闭思考 |
+| `deepseek-web-thinking` | 以接口声明为准：`text`、`image` | 同一网页模型，默认开启思考；仅在有账号支持时列出 |
 
 图片模型必须在 Pi 声明同时支持 `text`、`image`，否则图片可能根本没有被发送。
 
 不要开启托管 Tool Search、官方托管 `web_search`、远程压缩或“1M 上下文”声明。保留 Pi 的工具执行权限确认。下面的原生网页搜索不依赖这些托管工具。
+
+### DeepSeek 动态模型发现
+
+2.0 移除了全部旧 DeepSeek 模型 ID，**不保留兼容别名**。请将 Pi、CC Switch 等客户端改为 `deepseek-web` 或 `deepseek-web-thinking`。这两个名称是本项目别名，不是官方付费 API 的模型名；都向网页后端发送 `model_type: "default"`，请求显式指定的思考开关优先于别名默认值。
+
+每个 DeepSeek 账号使用自己的客户端身份和认证信息，以 `scope=model` 读取 `/api/v0/client/settings`。仅使用 **`enabled` 和 `switchable` 都为 true 的 `default` 条目**，读取思考、搜索、文件、视觉能力及文件格式、数量、大小和附件/搜索冲突配置，不回退到其他网页模式。
+
+- 能力**按账号缓存在内存中**，默认 300 秒；通过 `FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS` 调整，`0` 表示每次访问刷新。同一账号并发刷新会合并，不把认证信息或 settings JWT 写到磁盘。
+- 每次刷新最多等待 10 秒；失败后不继续使用过期能力；失败会冷却至多 30 秒。修复网络问题后重试，或重启服务重新加载。
+- `/v1/models` 仅展示当前可用的统一别名，额外返回 `input_modalities`、`thinking_enabled` 和 `capabilities`；能力表示至少一个可用账号支持。思考别名只汇总支持思考的账号。
+- 每个请求必须由**同一个账号同时满足全部能力条件**；会话亲和性和账号空闲状态不能绕过检查。需要换账号时，根据传入历史创建新的网页会话。
+- 未配置或已禁用的 DeepSeek 不显示占位模型。DeepSeek 查询失败不会隐藏可用 Qwen 模型；如果没有任何可列出模型且配置查询失败，则明确报错。
+
+以下 Pi 示例包含图片输入，因为当前公开统一配置支持视觉；账号存在差异时，请以你自己的 `/v1/models` 返回的 `input_modalities` 配置。能取得模型元数据不等于网页登录 Token 已通过生成请求验证。
 
 ### 直接配置 Pi
 
@@ -122,16 +135,16 @@ API Key 填 **`local`**。它只是客户端必填项占位符，不是访问密
           "maxTokens": 8192
         },
         {
-          "id": "deepseek-v4-flash-thinking",
-          "name": "DeepSeek V4 Flash Thinking (Web)",
+          "id": "deepseek-web",
+          "name": "DeepSeek Web (Unified)",
           "reasoning": true,
-          "input": ["text"],
+          "input": ["text", "image"],
           "contextWindow": 65536,
           "maxTokens": 8192
         },
         {
-          "id": "deepseek-v4-vision-thinking",
-          "name": "DeepSeek V4 Vision Thinking (Web)",
+          "id": "deepseek-web-thinking",
+          "name": "DeepSeek Web Thinking (Unified)",
           "reasoning": true,
           "input": ["text", "image"],
           "contextWindow": 65536,
@@ -157,7 +170,7 @@ API Key 填 **`local`**。它只是客户端必填项占位符，不是访问密
 node ./pi-extension/install.mjs
 ```
 
-安装器只向用户级 Pi 设置追加本项目扩展路径，保留其他提供商和设置。**重启 Pi**（更新项目代码后也要重启 FreeTokenAPI），选择 `free-token-api` 下的 **Qwen 或 DeepSeek Flash 模型**（`deepseek-v4-flash` / `deepseek-v4-flash-thinking`）。首次测试建议新开会话，之前已经发送到旧会话的 PDF 乱码不会被自动改写。
+安装器只向用户级 Pi 设置追加本项目扩展路径，保留其他提供商和设置。**重启 Pi**（更新项目代码后也要重启 FreeTokenAPI），选择 `free-token-api` 下的 **Qwen 或 DeepSeek Web 模型**（`deepseek-web` / `deepseek-web-thinking`）。首次测试建议新开会话，之前已经发送到旧会话的 PDF 乱码不会被自动改写。
 
 在 Pi 输入框中，把明确的附件引用和问题一起发送：
 
@@ -181,12 +194,12 @@ CLI 启动参数也支持。下面在普通 PowerShell 运行，不是在 Pi 聊
 ```powershell
 pi --provider free-token-api --model qwen3.8-max '@C:\Users\Administrator\Desktop\report.pdf' '请总结这份 PDF'
 pi --provider free-token-api --model qwen3.8-max --attach 'C:\Users\Administrator\Desktop\report.pdf' '请总结这份 PDF'
-pi --provider free-token-api --model deepseek-v4-flash-thinking '@C:\Users\Administrator\Desktop\report.pdf' '请总结这份 PDF'
+pi --provider free-token-api --model deepseek-web-thinking '@C:\Users\Administrator\Desktop\report.pdf' '请总结这份 PDF'
 ```
 
 `--attach` 接收一个文件，可完全避开 Pi 启动时的 `@file` 文本展开。普通 CLI `@PDF` 则会在**写入会话、发送模型之前**，由扩展精确替换 Pi 已展开的文件块，不把乱码送入上下文。它不提取 PDF 文本，也不依赖 `read` 工具；原始字节会按协议装配为 `file`、`input_file` 或 `document`。
 
-自动引用支持 PDF、DOC/DOCX、XLS/XLSX、PPT/PPTX、ODT/ODS/ODP、RTF；显式 `/attach` 还支持 TXT、Markdown、CSV、JSON。**Qwen 与 DeepSeek Flash 的 PDF 已做实网验证，其他格式仍取决于上游解析器、模型和账号限制。** 图片与普通文本 / 代码引用保留 Pi 原有行为。DeepSeek Vision 只支持图片，本项目仍拒绝 Pro 附件；DeepSeek PDF / 文档请选择 Flash。本扩展不为其他提供商启用文档上传。
+自动引用支持 PDF、DOC/DOCX、XLS/XLSX、PPT/PPTX、ODT/ODS/ODP、RTF；显式 `/attach` 还支持 TXT、Markdown、CSV、JSON。**Qwen / DeepSeek 网页后端的 PDF 传输已做实网验证；2.0 的模型发现及能力路由有离线回归覆盖。** 图片与普通文本 / 代码引用保留 Pi 原有行为。DeepSeek 图片与文档能力以所选账号的官方配置为准，不再按 Flash / Pro / Vision 固定分流。本扩展不为其他提供商启用文档上传。
 
 若模型仍尝试用本地 `read` 读取已挂载的二进制文档，扩展会拦截这次文本解码，并提示模型使用原生附件；普通文本和图片的 `read` 不受影响。
 
@@ -207,7 +220,7 @@ node ./pi-extension/install.mjs --uninstall
 
 Qwen 使用真实网页上传链路：申请临时上传凭据 → 上传对象存储 → 必要时解析文档 → 随聊天请求发送文件引用，不是只把文件名塞进提示词。
 
-DeepSeek Flash 使用网页文件上传接口及 PoW，必要时等待文件解析完成，再把 `ref_file_ids` 传给生成请求。Vision 用于图片而非 PDF 文档；本项目仍保留 Pro 的附件限制。
+DeepSeek Web 使用网页文件上传接口及 PoW，必要时等待文件解析完成，再把 `ref_file_ids` 传给生成请求。上传前按所选账号的配置检查文件格式、数量、大小、视觉能力以及附件与搜索是否冲突。
 
 | API | 图片格式 | 文件格式 |
 | --- | --- | --- |
@@ -294,6 +307,7 @@ Responses 历史仅在进程内存中，可过期或被淘汰；重启后旧 `pr
 | `FREETOKENAPI_HOST` | `127.0.0.1` | 仅建议回环监听 |
 | `FREETOKENAPI_PORT` | `8000` | 端口 |
 | `FREETOKENAPI_TIMEOUT` | `60` | 上游 HTTP 超时，不是整次生成总时限 |
+| `FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS` | `300` | 每账号 DeepSeek 能力缓存有效秒数；`0` 每次刷新 |
 | `FREETOKENAPI_SEARCH_ENABLED` | `0` | 默认原生搜索开关 |
 | `FREETOKENAPI_CACHE_DIR` | 系统临时目录下 `freetokenapi` | 会话、上下文和用量文件 |
 | `FREETOKENAPI_CACHE_DISABLED` | `0` | 设为 `1` 关闭磁盘会话缓存 |
@@ -344,6 +358,8 @@ Windows 改用 `.venv\Scripts\python.exe`。大多数测试模拟上游，不需
 CI 在 Windows、macOS、Linux 上使用 Node.js 24 执行离线测试，并包含 Python 3.10 兼容性任务。CI 不接收网页登录 Token，也不运行需要账号的在线冒烟脚本。Git 忽略 `.env`、虚拟环境、客户端本地配置、缓存及日志；只发布不含凭据的 `.env.example`。
 
 ### 验证范围
+
+2.0 新增每账号模型目录、TTL/失败恢复、旧 ID 拒绝及能力路由测试；另以一次匿名只读请求核对当前官方模型配置与缓存，并用新模型 ID 在真实 Pi CLI 上通过三种协议完成模拟后端的 PDF/工具往返检查。以下旧版在线 CLI 结果描述传输与工具层，不代表已用配置好的账号完成 2.0 在线生成测试。
 
 已使用 Pi 0.85.1 的实际适配器，通过三种协议分别连接真实 DeepSeek / Qwen 后端验证图片问答和原生搜索；另通过三种协议验证了 Qwen PDF，并验证了文本附件上传解析。工具往返、错误格式、用量解析有 SDK 级模拟检查和 Python 回归测试。
 

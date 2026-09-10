@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Generic, Protocol, TypeVar
 
 from .deepseek.client import DeepSeekClient
+from .deepseek.models import ModelConfigCache
 from .pow import PowManager
 from .sessions import SessionRegistry
 from .store import JsonStore
@@ -161,7 +162,7 @@ class ContextIndex:
 
 
 class DeepSeekAccount:
-    __slots__ = ("broken", "client", "index", "pow", "pow_upload", "sem", "sessions", "stable_id")
+    __slots__ = ("broken", "client", "index", "pow", "pow_upload", "sem", "sessions", "stable_id", "model_config")
 
     def __init__(
         self,
@@ -171,9 +172,11 @@ class DeepSeekAccount:
         ttl: float = 0.0,
         store: JsonStore | None = None,
         stable_id: str | None = None,
+        model_config_ttl: float = 300.0,
     ) -> None:
         self.index = index
         self.client = client
+        self.model_config = ModelConfigCache(client, model_config_ttl)
         self.pow = PowManager()
         self.pow_upload = PowManager()
         self.sem = asyncio.Semaphore(1)
@@ -192,6 +195,7 @@ class DeepSeekAccount:
 
 
 class _PoolAccount(Protocol):
+    index: int
     broken: bool
     sem: asyncio.Semaphore
 
@@ -320,15 +324,17 @@ class AccountPool(Generic[AccountT]):
             "ttl_seconds": self._ttl,
         }
 
-    async def acquire(self, session_id: str | None, max_wait: float | None = None) -> tuple[AccountT, str | None]:
-        healthy = self.healthy
+    async def acquire(
+        self, session_id: str | None, max_wait: float | None = None, *, allowed_indices: set[int] | None = None,
+    ) -> tuple[AccountT, str | None]:
+        healthy = [account for account in self.healthy if allowed_indices is None or account.index in allowed_indices]
         if not healthy:
             raise RuntimeError(f"all {self.label} accounts are unavailable")
         if session_id:
             acct = self.account_for_session(session_id)
-            if acct is not None:
+            if acct is not None and (allowed_indices is None or acct.index in allowed_indices):
                 if acct.sem.locked() and max_wait is not None:
-                    return await self._wait_free(acct, max_wait, session_id)
+                    return await self._wait_free(acct, max_wait, session_id, allowed_indices)
                 return acct, session_id
         n = len(healthy)
         start = self._rr % n
@@ -339,7 +345,7 @@ class AccountPool(Generic[AccountT]):
                 self._rr = (idx + 1) % n
                 return acct, None
         if max_wait is not None:
-            return await self._wait_free(None, max_wait, None)
+            return await self._wait_free(None, max_wait, None, allowed_indices)
         acct = healthy[start]
         return acct, None
 
@@ -348,13 +354,14 @@ class AccountPool(Generic[AccountT]):
         preferred: AccountT | None,
         max_wait: float,
         session_id: str | None,
+        allowed_indices: set[int] | None = None,
     ) -> tuple[AccountT, str | None]:
         deadline = time.monotonic() + max_wait
         while True:
             if preferred is not None and not preferred.broken:
                 candidates = [preferred]
             else:
-                candidates = self.healthy
+                candidates = [account for account in self.healthy if allowed_indices is None or account.index in allowed_indices]
             if not candidates:
                 raise AccountPoolBusy()
             for i, acct in enumerate(candidates):

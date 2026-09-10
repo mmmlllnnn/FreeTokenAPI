@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.0 — 2026-09-10
+
+### Breaking changes
+
+- Removed every previous DeepSeek model ID without compatibility aliases. Clients must select `deepseek-web` or `deepseek-web-thinking`. Both target the web backend's enabled, switchable `default` model, with different default thinking flags.
+- Removed fixed Flash/Pro/Vision attachment rules and updated the Pi extension and configuration examples.
+
+### Added
+
+- Official `model_configs` discovery and a per-account, in-memory TTL cache with coalesced refreshes and bounded failure cooldown. Expired capabilities are never used after refresh failure.
+- Dynamic model advertising with input modalities and capability metadata; capability-aware routing for thinking, search, images, file formats and upload limits.
+- Regression coverage for heterogeneous accounts, disabled defaults, schema errors, cache refresh, old-ID rejection and attachment routing across all three protocols.
+
+The published 1.0.0 history remains unchanged.
+
 ## 1.0.0 — 2026-09-09
 
 Initial public release.

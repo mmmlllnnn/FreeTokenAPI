@@ -37,7 +37,7 @@ try {
       await fs.writeFile(temporary, JSON.stringify(settings, null, 2) + "\n", { flag: "wx", mode: 0o600 });
       await fs.rename(temporary, settingsPath);
     } finally { await fs.unlink(temporary).catch(() => {}); }
-    console.log(uninstall ? "Native files extension unregistered; cached documents were not deleted." : "Native files extension registered. Restart Pi or use /reload; select free-token-api / Qwen or DeepSeek Flash.");
+    console.log(uninstall ? "Native files extension unregistered; cached documents were not deleted." : "Native files extension registered. Restart Pi or use /reload; select free-token-api / Qwen or DeepSeek Web.");
     console.log(settingsPath);
   }
 } catch (error) {

@@ -1,6 +1,6 @@
 # FreeTokenAPI
 
-**Version 1.0.0** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+**Version 2.0.0** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
 
 Use your own **DeepSeek and Qwen web accounts** through a local API. FreeTokenAPI provides OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatibility, with streaming, client tool calls, attachments, and the web providers' native search.
 
@@ -95,13 +95,26 @@ Suggested models:
 | --- | --- | --- |
 | `qwen3.8-max` | `text`, `image` | Recommended for Qwen text and image conversations; account availability still applies |
 | `qwen3.7-plus` | `text`, `image` | Use only if available to your account |
-| `deepseek-v4-flash-thinking` | `text` | DeepSeek text/reasoning; `deepseek-v4-flash` defaults to thinking off |
-| `deepseek-v4-vision-thinking` | `text`, `image` | Preferred DeepSeek image model |
-| `deepseek-v4-pro-thinking` | `text` | This adapter rejects file attachments for Pro |
+| `deepseek-web` | `text`, `image` when advertised | Unified DeepSeek web model; thinking defaults off |
+| `deepseek-web-thinking` | `text`, `image` when advertised | Same web model; thinking defaults on; listed only when an account supports it |
 
 Mark image-capable entries as accepting **both text and images** in Pi. Otherwise Pi may omit the image before it reaches this API.
 
 Keep hosted **Tool Search**, official hosted `web_search`, remote compaction, and “1M context” capability declarations disabled. Native web search below is a different capability. Keep Pi's normal tool-execution permission checks enabled.
+
+### Dynamic DeepSeek model discovery
+
+Version 2 removes all old DeepSeek model IDs; there are **no compatibility aliases**. Update Pi, CC Switch and other clients to `deepseek-web` or `deepseek-web-thinking`. These are this adapter's aliases, not model IDs from the paid DeepSeek API. Both send `model_type: "default"` to the web backend; an explicit request thinking flag overrides the alias default.
+
+Each DeepSeek account fetches `/api/v0/client/settings` with `scope=model` and its own client identity/authentication. Only an **enabled, switchable `default` entry** is usable. The adapter reads its thinking, search, file and vision features, permitted file extensions, upload limits, and attachment/search conflict flag. It never falls back to another web mode.
+
+- Capabilities are cached **in memory per account** for 300 seconds (`FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS`; `0` refreshes on every access). Concurrent refreshes are coalesced. No metadata credentials or settings JWTs are stored on disk.
+- Each refresh has a 10-second deadline. A failed refresh does not reuse expired capabilities. Failures have a cooldown of up to 30 seconds; retry later or restart after fixing connectivity.
+- `/v1/models` advertises only the usable unified aliases. Its extra `input_modalities`, `thinking_enabled` and `capabilities` fields describe capabilities available on at least one eligible account. The thinking alias includes only thinking-capable accounts.
+- Each request must fit **one account's complete capability set**. Session affinity and a free account cannot override these checks. If a different account is needed, a new web session is built from the supplied history.
+- Unconfigured or disabled DeepSeek accounts do not produce placeholder models. Failed DeepSeek discovery does not hide available Qwen models; when no models can be listed and discovery failed, the endpoint returns an explicit error.
+
+The Pi example below enables images because the current public unified configuration advertises vision. Use `input_modalities` from your own `/v1/models` response when configuring accounts with different capabilities. Metadata availability alone does not prove a login token can generate a response.
 
 ### Configure Pi directly
 
@@ -124,16 +137,16 @@ Merge the following provider into `~/.pi/agent/models.json` (on Windows: `%USERP
           "maxTokens": 8192
         },
         {
-          "id": "deepseek-v4-flash-thinking",
-          "name": "DeepSeek V4 Flash Thinking (Web)",
+          "id": "deepseek-web",
+          "name": "DeepSeek Web (Unified)",
           "reasoning": true,
-          "input": ["text"],
+          "input": ["text", "image"],
           "contextWindow": 65536,
           "maxTokens": 8192
         },
         {
-          "id": "deepseek-v4-vision-thinking",
-          "name": "DeepSeek V4 Vision Thinking (Web)",
+          "id": "deepseek-web-thinking",
+          "name": "DeepSeek Web Thinking (Unified)",
           "reasoning": true,
           "input": ["text", "image"],
           "contextWindow": 65536,
@@ -159,7 +172,7 @@ Install from this project directory:
 node ./pi-extension/install.mjs
 ```
 
-The installer adds this project's extension path to your user-level Pi settings, preserving existing providers and settings. **Restart Pi** (and restart FreeTokenAPI after updating its code), then select a **Qwen or DeepSeek Flash model under `free-token-api`** (`deepseek-v4-flash` / `deepseek-v4-flash-thinking`). Start a fresh conversation for the first test: old PDF text already sent in a previous conversation is not rewritten.
+The installer adds this project's extension path to your user-level Pi settings, preserving existing providers and settings. **Restart Pi** (and restart FreeTokenAPI after updating its code), then select a **Qwen or DeepSeek Web model under `free-token-api`** (`deepseek-web` / `deepseek-web-thinking`). Start a fresh conversation for the first test: old PDF text already sent in a previous conversation is not rewritten.
 
 In Pi's editor, send an explicit attachment reference with your question:
 
@@ -183,12 +196,12 @@ CLI entry points also work (the following are PowerShell examples, not commands 
 ```powershell
 pi --provider free-token-api --model qwen3.8-max '@C:\Users\Administrator\Desktop\report.pdf' 'Summarize this PDF'
 pi --provider free-token-api --model qwen3.8-max --attach 'C:\Users\Administrator\Desktop\report.pdf' 'Summarize this PDF'
-pi --provider free-token-api --model deepseek-v4-flash-thinking '@C:\Users\Administrator\Desktop\report.pdf' 'Summarize this PDF'
+pi --provider free-token-api --model deepseek-web-thinking '@C:\Users\Administrator\Desktop\report.pdf' 'Summarize this PDF'
 ```
 
 `--attach` accepts one file and avoids Pi's initial `@file` text expansion entirely. For ordinary CLI `@PDF`, the extension replaces Pi's exact expanded file block **before it is stored in the conversation or sent to the model**. It does not extract PDF text or depend on a `read` tool call. PDF bytes become `file`, `input_file`, or `document` parts for the selected protocol.
 
-Automatic references cover PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS/ODP and RTF. `/attach` also accepts TXT, Markdown, CSV and JSON as explicit documents. **PDF is live-tested with Qwen and DeepSeek Flash; other formats still depend on the provider's parser and model/account limits.** Ordinary image attachments and text/code references keep Pi's original behavior. DeepSeek Vision accepts images only, and this adapter still rejects Pro attachments: use Flash for DeepSeek PDF/documents. Other providers are not enabled by this extension.
+Automatic references cover PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS/ODP and RTF. `/attach` also accepts TXT, Markdown, CSV and JSON as explicit documents. **PDF transport has been live-tested with the Qwen and DeepSeek web backends; version 2 model discovery and capability routing have offline regression coverage.** Ordinary image attachments and text/code references keep Pi's original behavior. DeepSeek image/document availability comes from the selected account's official model configuration, not a fixed Flash/Pro/Vision rule. Other providers are not enabled by this extension.
 
 If the model nevertheless tries the local `read` tool on an already attached binary document, the extension blocks that decoding attempt and points it back to the native attachment. Normal text/image reads are unchanged.
 
@@ -209,7 +222,7 @@ Before moving this project directory, unregister the extension. If it has alread
 
 Qwen attachments are uploaded to the same web backend used by the browser: temporary upload grant → object storage → document parsing where needed → file references in the chat request. The adapter does not merely insert a filename into the prompt.
 
-DeepSeek Flash uses its web file-upload endpoint with PoW, waits for file parsing when necessary, and passes `ref_file_ids` to generation. DeepSeek Vision is for images, not PDF documents; Pro attachments remain unsupported in this adapter.
+DeepSeek Web uses its web file-upload endpoint with PoW, waits for file parsing when necessary, and passes `ref_file_ids` to generation. File types, upload limits, vision support, and attachment/search combinations are checked against the account's cached official capabilities before upload.
 
 Supported inline request forms:
 
@@ -299,6 +312,7 @@ See [config.py](freetokenapi/config.py) for all settings. Common options:
 | `FREETOKENAPI_HOST` | `127.0.0.1` | Listen address; keep it on loopback |
 | `FREETOKENAPI_PORT` | `8000` | Listen port |
 | `FREETOKENAPI_TIMEOUT` | `60` | Upstream HTTP timeout in seconds, not a whole-generation deadline |
+| `FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS` | `300` | Per-account DeepSeek capability cache TTL; `0` disables successful-result caching |
 | `FREETOKENAPI_SEARCH_ENABLED` | `0` | Default native-search switch; explicit request values win |
 | `FREETOKENAPI_CACHE_DIR` | System temp directory / `freetokenapi` | Persistent session/context and usage files |
 | `FREETOKENAPI_CACHE_DISABLED` | `0` | Set to `1` to disable persistent session caching |
@@ -349,6 +363,8 @@ Use `.venv\Scripts\python.exe` on Windows. Most tests mock the upstream and neve
 CI runs the offline suite on Windows, macOS, and Linux with Node.js 24, including a Python 3.10 compatibility job. It does not receive web login tokens or run the opt-in live smoke scripts. `.env`, virtual environments, local agent settings, caches, and logs are excluded from Git; only the blank `.env.example` is published.
 
 ### Verification scope
+
+Version 2 adds account-specific model-catalog, TTL/failure recovery, legacy-ID rejection and capability-routing tests. The parser/cache were also checked with one anonymous, read-only request to the current official model configuration. Actual Pi CLI PDF/tool round-trips passed through all three protocols against a mock backend using the new model ID. Earlier live CLI results below describe the transport/tool layer; they are not a claim that version 2 was live-tested with a configured account.
 
 Pi 0.85.1's actual adapters were exercised against real DeepSeek and Qwen web backends through all three protocols for image questions and native web search. Qwen PDF uploads through all three protocols and text-file upload/parsing were also checked. Tool round-trips, error envelopes, and usage parsing have SDK-level mocked checks and Python regressions.
 

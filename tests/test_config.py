@@ -110,3 +110,10 @@ def test_native_search_default_setting(settings_for, value, expected):
 
 def test_native_search_defaults_off_without_opt_in(settings_for):
     assert settings_for({}).search_enabled is False
+
+
+def test_model_config_ttl(settings_for):
+    assert settings_for({}).model_config_ttl == 300
+    assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "15"}).model_config_ttl == 15
+    assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "0"}).model_config_ttl == 0
+    assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "invalid"}).model_config_ttl == 300

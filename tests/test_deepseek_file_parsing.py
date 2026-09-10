@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from deepseek_fixtures import model_configs
 from fastapi import HTTPException
 
 from freetokenapi.api import openai as api
 from freetokenapi.deepseek.client import DeepSeekClient, DeepSeekError
+from freetokenapi.deepseek.models import parse_default_model
 
 
 def client_with_statuses(*records):
@@ -123,8 +125,9 @@ async def test_busy_upload_returns_429_before_generation(monkeypatch, stream):
     monkeypatch.setattr(api.settings, "acquire_timeout", 0.01)
     monkeypatch.setattr(api, "_acquire_and_build", AsyncMock(return_value=(account, None, (), "read the file", False)))
     monkeypatch.setattr(api, "_upload_attachments", upload)
+    monkeypatch.setattr(api, "_deepseek_model_configs", AsyncMock(return_value=({0: parse_default_model(model_configs())}, [])))
     request = api.ChatCompletionRequest(
-        model="deepseek-v4-flash", stream=stream,
+        model="deepseek-web", stream=stream,
         messages=[{"role": "user", "content": [{"type": "file", "file": {"filename": "report.txt", "file_data": "data:text/plain;base64,dGVzdA=="}}]}],
     )
     with pytest.raises(HTTPException) as error:

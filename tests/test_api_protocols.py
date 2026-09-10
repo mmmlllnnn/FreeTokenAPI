@@ -19,7 +19,7 @@ from freetokenapi.api.compat import (
 from freetokenapi.api.messages import create_messages_router
 from freetokenapi.api.responses import ResponseStore, create_responses_router
 
-MODEL = "deepseek-v4-flash"
+MODEL = "deepseek-web"
 TOOL = {"type": "function", "name": "weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}
 CLAUDE_TOOL = {"name": "weather", "input_schema": TOOL["parameters"]}
 CALL = {"id": "call_weather", "type": "function", "function": {"name": "weather", "arguments": '{"city":"台北"}'}}
@@ -639,6 +639,7 @@ async def test_real_router_reuses_existing_provider_implementation(monkeypatch, 
 
     account = FakeAccount([DS_TOOL_SSE if provider == "deepseek" else QWEN_TOOL_SSE])
     pool = MagicMock()
+    pool.healthy = [account]
     monkeypatch.setattr(api.app.state, "pool", pool, raising=False)
     monkeypatch.setattr(api.app.state, "qwen_pool", pool, raising=False)
     monkeypatch.setattr(api, "_acquire_and_build", AsyncMock(return_value=(account, "s1", None, "request", True)))

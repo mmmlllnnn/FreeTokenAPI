@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from deepseek_fixtures import model_configs
 from fastapi.testclient import TestClient
 
 import freetokenapi.api.openai as openai_mod
@@ -13,6 +14,7 @@ from freetokenapi import tools as toolemu
 from freetokenapi.accounts import AccountPoolBusy
 from freetokenapi.api.openai import app, settings
 from freetokenapi.deepseek.client import DeepSeekError
+from freetokenapi.deepseek.models import ModelConfigCache
 
 OK_SSE = (
     "event: ready\n"
@@ -99,6 +101,8 @@ class FakeAccount:
         self.index = 0
         self.broken = False
         self.client = MagicMock()
+        self.client.get_model_configs = AsyncMock(return_value=model_configs())
+        self.model_config = ModelConfigCache(self.client)
         self.client.completion = AsyncMock(side_effect=[FakeResp(sse_text=s) for s in (sse_list or [OK_SSE])])
         self.client.create_pow_challenge = AsyncMock(return_value={})
         self.pow = MagicMock()
@@ -118,6 +122,7 @@ class FakeAccount:
 def make_pool(acct=None):
     pool = MagicMock()
     acct = acct or FakeAccount()
+    pool.healthy = [acct]
     pool.acquire = AsyncMock(return_value=(acct, None))
     return pool, acct
 
@@ -180,9 +185,8 @@ def test_pool_stats():
 
 
 def test_resolve_model():
-    assert openai_mod._resolve_model("deepseek-v4-flash") == "default"
-    assert openai_mod._resolve_model("deepseek-v4-pro") == "expert"
-    assert openai_mod._resolve_model("deepseek-v4-vision") == "vision"
+    assert openai_mod._resolve_model("deepseek-web") == "default"
+    assert openai_mod._resolve_model("deepseek-web-thinking") == "default"
 
 
 def test_resolve_model_unknown():
@@ -193,8 +197,10 @@ def test_resolve_model_unknown():
 
 def test_resolve_provider():
     assert openai_mod._resolve_provider("qwen3.8-max") == "qwen"
-    assert openai_mod._resolve_provider("deepseek-v4-flash") == "deepseek"
-    assert openai_mod._resolve_provider("deepseek-whatever") == "deepseek"
+    assert openai_mod._resolve_provider("deepseek-web") == "deepseek"
+    with pytest.raises(openai_mod.HTTPException) as error:
+        openai_mod._resolve_provider("deepseek-whatever")
+    assert error.value.status_code == 404
 
 
 def test_resolve_provider_unknown():
@@ -337,7 +343,7 @@ async def test_acquire_and_build_with_session():
     pool = MagicMock()
     pool.acquire = AsyncMock(return_value=(acct, "s1"))
     req = SimpleNamespace(
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         messages=[openai_mod.ChatMessage(role="user", content="hello")],
         session_id="s1",
         tools=None,
@@ -359,7 +365,7 @@ async def test_acquire_and_build_without_session_uses_context():
     pool.acquire = AsyncMock(return_value=(acct, None))
     pool.resolve_context = MagicMock(return_value="cached")
     req = SimpleNamespace(
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         messages=[openai_mod.ChatMessage(role="user", content="hello")],
         session_id=None,
         tools=None,
@@ -379,7 +385,7 @@ async def test_acquire_and_build_raises_400_on_bad_messages():
     pool = MagicMock()
     pool.acquire = AsyncMock(return_value=(acct, None))
     req = SimpleNamespace(
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         messages=[],
         session_id=None,
         tools=None,
@@ -617,7 +623,7 @@ def test_too_many_files():
     )
     atts = openai_mod._collect_attachments(req)
     with pytest.raises(Exception) as excinfo:
-        openai_mod._validate_attachments(atts, "default")
+        openai_mod._validate_attachments(atts)
     assert excinfo.value.status_code == 400
 
 
@@ -723,13 +729,13 @@ def test_usage_endpoint_snapshot():
     from freetokenapi.usage import UsageTracker
 
     tracker = UsageTracker()
-    tracker.record("deepseek", "deepseek-v4-flash", 10, 20, 30, user="alice")
+    tracker.record("deepseek", "deepseek-web", 10, 20, 30, user="alice")
     app.state.usage = tracker
     client = TestClient(app)
     data = client.get("/v1/usage").json()
     client.close()
     assert data["totals"] == {"requests": 1, "prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
-    assert data["by_model"]["deepseek-v4-flash"]["requests"] == 1
+    assert data["by_model"]["deepseek-web"]["requests"] == 1
     assert data["by_user"]["alice"]["requests"] == 1
     assert len(data["recent"]) == 1
 
@@ -747,12 +753,13 @@ def test_health_includes_usage():
 
 
 def test_list_models():
+    app.state.pool, _ = make_pool()
     app.state.qwen_models = [{"id": "qwen3.8-max", "name": "Q", "owned_by": "qwen", "model_type": "chat"}]
     client = TestClient(app)
     data = client.get("/v1/models").json()
     client.close()
     ids = [m["id"] for m in data["data"]]
-    assert "deepseek-v4-flash" in ids
+    assert "deepseek-web" in ids
     assert "qwen3.8-max" in ids
 
 
@@ -765,7 +772,7 @@ def test_chat_unknown_model():
 
 def test_chat_deepseek_not_configured():
     client = TestClient(app)
-    resp = client.post("/v1/chat/completions", json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]})
+    resp = client.post("/v1/chat/completions", json={"model": "deepseek-web", "messages": [{"role": "user", "content": "hi"}]})
     client.close()
     assert resp.status_code == 503
 
@@ -783,7 +790,7 @@ def test_chat_deepseek_non_stream():
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+        json={"model": "deepseek-web", "messages": [{"role": "user", "content": "hi"}]},
     )
     client.close()
     assert resp.status_code == 200
@@ -798,7 +805,7 @@ def test_chat_deepseek_stream():
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}], "stream": True},
+        json={"model": "deepseek-web", "messages": [{"role": "user", "content": "hi"}], "stream": True},
     )
     client.close()
     assert resp.status_code == 200
@@ -814,7 +821,7 @@ def test_chat_deepseek_context_length():
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+        json={"model": "deepseek-web", "messages": [{"role": "user", "content": "hi"}]},
     )
     client.close()
     assert resp.status_code == 400
@@ -862,7 +869,7 @@ def test_chat_deepseek_attachment_via_endpoint():
     payload = {"name": "a.png", "content": b64.b64encode(b"hello").decode(), "content_type": "image/png"}
     resp = client.post(
         "/v1/chat/completions",
-        json={"model": "deepseek-v4-vision", "messages": [{"role": "user", "content": "x"}], "files": [payload]},
+        json={"model": "deepseek-web", "messages": [{"role": "user", "content": "x"}], "files": [payload]},
     )
     client.close()
     assert resp.status_code == 200
@@ -968,7 +975,7 @@ def test_file_too_large():
     )
     atts = openai_mod._collect_attachments(req)
     with pytest.raises(Exception) as excinfo:
-        openai_mod._validate_attachments(atts, "default")
+        openai_mod._validate_attachments(atts)
     assert excinfo.value.status_code == 400
 
 
@@ -1027,7 +1034,7 @@ async def test_non_stream_auto_continues():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1045,7 +1052,7 @@ async def test_stream_auto_continues():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1074,7 +1081,7 @@ async def test_non_stream_input_exceeds_http_continues():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1098,7 +1105,7 @@ async def test_stream_input_exceeds_http_continues():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1124,7 +1131,7 @@ async def test_non_stream_input_exceeds_http_continuation_none():
             existing_sid="s1",
             lock=acct.sem,
             prompt="x",
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             model_type="default",
             thinking=False,
             search=False,
@@ -1149,7 +1156,7 @@ async def test_stream_input_exceeds_http_continuation_none():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1219,7 +1226,7 @@ async def test_non_stream_input_exceeds_reduced_retry():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1248,7 +1255,7 @@ async def test_stream_input_exceeds_reduced_retry():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1278,7 +1285,7 @@ async def test_stream_input_exceeds_reduced_retry_reasoning():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=True,
         search=False,
@@ -1300,7 +1307,7 @@ async def test_non_stream_input_exceeds_continuation_still_input_exceeds():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1319,7 +1326,7 @@ async def test_stream_input_exceeds_continuation_still_input_exceeds():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1347,7 +1354,7 @@ async def test_non_stream_input_exceeds_reduced_retry_fails():
             existing_sid="s1",
             lock=acct.sem,
             prompt="x",
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             model_type="default",
             thinking=False,
             search=False,
@@ -1374,7 +1381,7 @@ async def test_stream_input_exceeds_reduced_retry_fails():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1403,7 +1410,7 @@ async def test_stream_input_exceeds_reduced_retry_tool_mode():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1426,7 +1433,7 @@ async def test_stream_prepare_session_error():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1445,7 +1452,7 @@ def test_stream_emits_usage():
     resp = client.post(
         "/v1/chat/completions",
         json={
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-web",
             "messages": [{"role": "user", "content": "hi"}],
             "stream": True,
             "stream_options": {"include_usage": True},
@@ -1491,7 +1498,7 @@ def test_chat_deepseek_build_prompt_error():
     client = TestClient(app)
     resp = client.post(
         "/v1/chat/completions",
-        json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": 42}]},
+        json={"model": "deepseek-web", "messages": [{"role": "user", "content": 42}]},
     )
     assert resp.status_code == 400
     client.close()
@@ -1504,7 +1511,7 @@ async def test_chat_deepseek_busy_non_stream():
     with patch("freetokenapi.api.openai.account_lock", side_effect=AccountPoolBusy()):
         resp = client.post(
             "/v1/chat/completions",
-            json={"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "hi"}]},
+            json={"model": "deepseek-web", "messages": [{"role": "user", "content": "hi"}]},
         )
     assert resp.status_code == 429
     client.close()
@@ -1651,7 +1658,7 @@ async def test_deepseek_non_stream_retryable_http():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1693,7 +1700,7 @@ async def test_deepseek_non_stream_finish_buffer():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1722,7 +1729,7 @@ async def test_non_stream_tool_mode_with_reasoning():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=True,
         search=False,
@@ -1742,7 +1749,7 @@ async def test_non_stream_reasoning_without_tools():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=True,
         search=False,
@@ -1761,7 +1768,7 @@ async def test_stream_reasoning_delta():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=True,
         search=False,
@@ -1787,7 +1794,7 @@ async def test_non_stream_input_exceeds_continuation_none():
             existing_sid="s1",
             lock=acct.sem,
             prompt="x",
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             model_type="default",
             thinking=False,
             search=False,
@@ -1805,7 +1812,7 @@ async def test_stream_input_exceeds_tool_mode_continuation():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=True,
         search=False,
@@ -1831,7 +1838,7 @@ async def test_stream_input_exceeds_continuation_none():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1892,7 +1899,7 @@ async def test_non_stream_ready_without_message_id():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1909,7 +1916,7 @@ async def test_stream_ready_without_message_id():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1937,7 +1944,7 @@ async def test_non_stream_continuation_rounds_exhausted():
             existing_sid="s1",
             lock=acct.sem,
             prompt="x",
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             model_type="default",
             thinking=False,
             search=False,
@@ -1956,7 +1963,7 @@ async def test_stream_continuation_rounds_exhausted():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -1993,7 +2000,7 @@ async def test_stream_input_exceeds_reduced_reasoning_only():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,
@@ -2031,7 +2038,7 @@ async def test_stream_tool_mode_reduced_emits_tool_calls():
         existing_sid="s1",
         lock=acct.sem,
         prompt="x",
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         model_type="default",
         thinking=False,
         search=False,

@@ -54,6 +54,7 @@ class Settings:
         self.timeout = _env_float("FREETOKENAPI_TIMEOUT", 60.0)
         self.search_enabled = os.environ.get("FREETOKENAPI_SEARCH_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
         self.acquire_timeout = _env_float_opt("FREETOKENAPI_ACQUIRE_TIMEOUT")
+        self.model_config_ttl = _env_float("FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS", 300.0)
         self.session_cache_size = _env_int("FREETOKENAPI_SESSION_CACHE_SIZE", 128)
         self.session_ttl = _env_float("FREETOKENAPI_SESSION_TTL_SECONDS", 3600.0)
         self.log_level = _env_str("FREETOKENAPI_LOG_LEVEL", "INFO") or "INFO"

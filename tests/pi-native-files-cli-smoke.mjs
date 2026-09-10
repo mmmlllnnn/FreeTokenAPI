@@ -156,7 +156,7 @@ try {
   for (const api of (option("--api") ? [option("--api")] : ["openai-completions", "openai-responses", "anthropic-messages"])) {
     await fs.writeFile(path.join(agent, "models.json"), JSON.stringify({ providers: { "free-token-api": {
       api, apiKey: "local", baseUrl: `http://127.0.0.1:${port}${api === "anthropic-messages" ? "" : "/v1"}`,
-      models: [{ id: modelId, name: "Native file test", reasoning: true, input: modelId.startsWith("deepseek-v4-flash") ? ["text"] : ["text", "image"], contextWindow: 65536, maxTokens: 4096 }],
+      models: [{ id: modelId, name: "Native file test", reasoning: true, input: ["text", "image"], contextWindow: 65536, maxTokens: 4096 }],
     } } }));
     for (const entry of entryModes) {
       captures.length = 0;

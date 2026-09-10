@@ -134,12 +134,12 @@ def test_base_urls_return_lightweight_status_without_redirects(path, method):
     if method == "GET":
         assert response.json() == {
             "service": "FreeTokenAPI",
-            "version": "1.0.0",
+            "version": "2.0.0",
             "status": "ok",
             "api": "/v1",
             "adapter_features": [
                 "responses_namespace_tools", "messages_inline_instructions", "chat_completions_developer",
-                "qwen_chat_attachments", "native_web_search", "agent_tool_continuation",
+                "qwen_chat_attachments", "native_web_search", "agent_tool_continuation", "deepseek_model_configs",
             ],
         }
     else:
@@ -155,7 +155,7 @@ def test_automatic_documentation_routes_are_disabled(path):
 def test_openapi_keeps_chat_and_models_endpoints():
     schema = api.openapi()  # Internal schema inspection only; no public docs route.
     assert schema["info"]["title"] == "FreeTokenAPI"
-    assert schema["info"]["version"] == __version__ == "1.0.0"
+    assert schema["info"]["version"] == __version__ == "2.0.0"
     paths = schema["paths"]
     assert "post" in paths["/v1/chat/completions"]
     assert "get" in paths["/v1/models"]
@@ -165,7 +165,7 @@ def test_release_runtime_resources_are_present():
     from freetokenapi.pow import _NODE_SOLVER, _SOLVER_DIR
     from freetokenapi.store import DEFAULT_CACHE_SUBDIR
 
-    assert __version__ == "1.0.0"
+    assert __version__ == "2.0.0"
     assert DEFAULT_CACHE_SUBDIR == "freetokenapi"
     assert _SOLVER_DIR == Path(__file__).resolve().parents[1] / "freetokenapi" / "deepseek"
     assert _NODE_SOLVER.is_file()

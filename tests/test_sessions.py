@@ -5,6 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from deepseek_fixtures import capable_account_mock, model_configs
 
 import freetokenapi.api.openai as openai_mod
 import freetokenapi.qwen.api as qwen_api
@@ -39,6 +40,9 @@ class Message:
 
 
 class FakeSessionClient:
+    async def get_model_configs(self):
+        return model_configs()
+
     def __init__(self):
         self.counter = 0
 
@@ -473,11 +477,14 @@ def test_deepseek_stateless_request_resolves_cached_session():
     openai_mod._collect_non_stream = fake_collect
     try:
         pool = MagicMock()
-        pool.acquire = AsyncMock(return_value=(MagicMock(), "sess-a"))
+        pool.account_for_session.return_value = None
+        account = capable_account_mock()
+        pool.acquire = AsyncMock(return_value=(account, "sess-a"))
         pool.resolve_context = MagicMock(return_value="sess-a")
+        pool.healthy = [account]
         openai_mod.app.state.pool = pool
         req = SimpleNamespace(
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             stream=False,
             thinking=False,
             search=False,
@@ -505,15 +512,17 @@ def test_deepseek_cached_missing_session_renders_full_history():
 
     openai_mod._collect_non_stream = fake_collect
     try:
-        account = MagicMock()
+        account = capable_account_mock()
         account.sessions.get.return_value = None
         account.sessions.can_reuse.return_value = False
         pool = MagicMock()
+        pool.account_for_session.return_value = None
         pool.acquire = AsyncMock(return_value=(account, "sess-a"))
         pool.resolve_context = MagicMock(return_value="sess-a")
+        pool.healthy = [account]
         openai_mod.app.state.pool = pool
         req = SimpleNamespace(
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             stream=False,
             thinking=False,
             search=False,
@@ -547,11 +556,14 @@ def test_deepseek_explicit_session_bypasses_context_resolution():
     openai_mod._collect_non_stream = fake_collect
     try:
         pool = MagicMock()
-        pool.acquire = AsyncMock(return_value=(MagicMock(), "explicit-1"))
+        pool.account_for_session.return_value = None
+        account = capable_account_mock()
+        pool.acquire = AsyncMock(return_value=(account, "explicit-1"))
         pool.resolve_context = MagicMock()
+        pool.healthy = [account]
         openai_mod.app.state.pool = pool
         req = SimpleNamespace(
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             stream=False,
             thinking=False,
             search=False,
@@ -650,6 +662,9 @@ def test_deepseek_non_stream_accepts_include_usage():
 
 
 class FakeDeepSeekCreateClient:
+    async def get_model_configs(self):
+        return model_configs()
+
     def __init__(self):
         self.counter = 0
 
@@ -685,10 +700,12 @@ def test_deepseek_sequential_single_message_session_accumulates():
         client = FakeDeepSeekCreateClient()
         account = DeepSeekAccount(0, client)
         pool = MagicMock()
+        pool.account_for_session.return_value = None
         pool.acquire = AsyncMock(side_effect=[(account, None), (account, "seq-1")])
+        pool.healthy = [account]
         openai_mod.app.state.pool = pool
         base = {
-            "model": "deepseek-v4-flash",
+            "model": "deepseek-web",
             "stream": False,
             "thinking": False,
             "search": False,
@@ -725,11 +742,13 @@ def test_deepseek_cached_session_hit_sends_only_delta():
         account = DeepSeekAccount(0, client)
         asyncio.run(account.sessions.obtain("cached-1"))
         pool = MagicMock()
+        pool.account_for_session.return_value = None
         pool.acquire = AsyncMock(return_value=(account, "cached-1"))
         pool.resolve_context = MagicMock(return_value="cached-1")
+        pool.healthy = [account]
         openai_mod.app.state.pool = pool
         req = SimpleNamespace(
-            model="deepseek-v4-flash",
+            model="deepseek-web",
             stream=False,
             thinking=False,
             search=False,

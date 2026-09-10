@@ -58,14 +58,14 @@ test("standalone absolute drag paths are recognized, prose paths are not", () =>
   assert.equal(attachmentReferences("Discuss the path C:/files/paper.pdf without opening it.").length, 0);
 });
 
-test("model scope enables local Qwen and DeepSeek Flash while retaining model limits", () => {
+test("model scope enables Qwen and unified DeepSeek aliases, not legacy IDs", () => {
   assert.ok(supportsNativeFiles(MODEL));
-  for (const id of ["deepseek-v4-flash", "deepseek-v4-flash-thinking"]) assert.ok(supportsNativeFiles({ ...MODEL, id }));
-  for (const id of ["deepseek-v4-pro", "deepseek-v4-pro-thinking", "deepseek-v4-vision", "deepseek-v4-vision-thinking", "deepseek-unknown"]) {
+  for (const id of ["deepseek-web", "deepseek-web-thinking"]) assert.ok(supportsNativeFiles({ ...MODEL, id }));
+  for (const id of ["deepseek-v4-flash", "deepseek-v4-flash-thinking", "deepseek-v4-pro", "deepseek-v4-pro-thinking", "deepseek-v4-vision", "deepseek-v4-vision-thinking", "deepseek-unknown"]) {
     assert.equal(supportsNativeFiles({ ...MODEL, id }), false);
   }
-  assert.match(nativeFileSupportError({ ...MODEL, id: "deepseek-v4-vision-thinking" }), /accepts images, not PDF/);
-  assert.match(nativeFileSupportError({ ...MODEL, id: "deepseek-v4-pro-thinking" }), /Pro file attachments/);
+  assert.match(nativeFileSupportError({ ...MODEL, id: "deepseek-v4-vision-thinking" }), /old model IDs/);
+  assert.match(nativeFileSupportError({ ...MODEL, id: "deepseek-v4-pro-thinking" }), /old model IDs/);
   for (const changed of [{ provider: "openrouter" }, { baseUrl: "https://example.com/v1" }, { id: "deepseek-v4-vision-thinking" }, { api: "google-generative-ai" }]) {
     assert.equal(supportsNativeFiles({ ...MODEL, ...changed }), false);
   }
@@ -229,7 +229,7 @@ test("Pi handlers preserve images, attach without read, restore, and abort on fa
   const output = await handlers.get("before_provider_request")({ payload: request(MODEL.api, input.text) }, ctx);
   assert.deepEqual(partBytes(fileParts(output, MODEL.api)[0]), PDF);
   // Existing snapshots remain usable when switching between the two backends.
-  ctx.model = { ...MODEL, id: "deepseek-v4-flash-thinking" };
+  ctx.model = { ...MODEL, id: "deepseek-web-thinking" };
   const flashPayload = await handlers.get("before_provider_request")({ payload: { ...request(MODEL.api, input.text), model: ctx.model.id } }, ctx);
   assert.deepEqual(partBytes(fileParts(flashPayload, MODEL.api)[0]), PDF);
   ctx.model = MODEL;

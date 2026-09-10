@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from deepseek_fixtures import capable_account_mock
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
@@ -48,7 +49,7 @@ def pi_body(**overrides):
     }
 
 
-@pytest.mark.parametrize("model", ["qwen3.8-max", "deepseek-v4-flash-thinking"])
+@pytest.mark.parametrize("model", ["qwen3.8-max", "deepseek-web-thinking"])
 @pytest.mark.parametrize("stream", [False, True])
 def test_pi_default_provider_developer_message(pi_backend, model, stream):
     client, calls = pi_backend
@@ -164,14 +165,15 @@ def test_pi_tool_history_and_null_assistant_content(pi_backend, stream):
 
 
 @pytest.mark.parametrize("protocol", ["chat/completions", "responses", "messages"])
-@pytest.mark.parametrize("model", ["qwen3.8-max", "deepseek-v4-flash"])
+@pytest.mark.parametrize("model", ["qwen3.8-max", "deepseek-web"])
 @pytest.mark.parametrize("default", [False, True])
 @pytest.mark.parametrize("explicit", [None, False, True])
 def test_pi_protocols_share_native_search_default(monkeypatch, protocol, model, default, explicit):
     monkeypatch.setattr(api.settings, "search_enabled", default)
     monkeypatch.setattr(api.app.state, "pool", MagicMock(), raising=False)
     monkeypatch.setattr(api.app.state, "qwen_pool", MagicMock(), raising=False)
-    account = MagicMock()
+    account = capable_account_mock()
+    api.app.state.pool.healthy = [account]
     monkeypatch.setattr(api, "_acquire_and_build", AsyncMock(return_value=(account, None, (), "Hello", False)))
     calls = []
 

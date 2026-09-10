@@ -3,9 +3,11 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from deepseek_fixtures import model_configs
 
 import freetokenapi.api.openai as openai_mod
 import freetokenapi.qwen.api as qwen_api
+from freetokenapi.deepseek.models import ModelConfigCache
 
 TOOL_JSON = '{"tool_calls": [{"name": "get_weather", "arguments": {"city": "Moscow"}}]}'
 
@@ -85,6 +87,8 @@ class FakeAccount:
         self.index = 0
         self.broken = False
         self.client = MagicMock()
+        self.client.get_model_configs = AsyncMock(return_value=model_configs())
+        self.model_config = ModelConfigCache(self.client)
         self.client.completion = AsyncMock(side_effect=[FakeResp(s) for s in sse_list])
         self.client.create_pow_challenge = AsyncMock(return_value={})
         self.pow = MagicMock()
@@ -122,7 +126,7 @@ def _deepseek_args(acct, tool_mode=True):
         "existing_sid": "s1",
         "lock": acct.sem,
         "prompt": "x",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-web",
         "model_type": "default",
         "thinking": False,
         "search": False,

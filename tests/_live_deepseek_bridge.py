@@ -14,8 +14,8 @@ def main() -> None:
 
     root = Path(__file__).resolve().parents[1]
     incoming = json.load(sys.stdin)
-    if incoming["body"].get("model") not in {"deepseek-v4-flash", "deepseek-v4-flash-thinking"}:
-        raise ValueError("This live helper is restricted to DeepSeek Flash fixture tests")
+    if incoming["body"].get("model") not in {"deepseek-web", "deepseek-web-thinking"}:
+        raise ValueError("This live helper is restricted to DeepSeek Web fixture tests")
     config = dotenv_values(root / ".env")
     raw = os.environ.get("DEEPSEEK_TOKENS", config.get("DEEPSEEK_TOKENS") or "")
     token = next((value.strip() for value in raw.split(",") if value.strip()), "")

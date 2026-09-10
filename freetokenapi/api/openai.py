@@ -26,6 +26,7 @@ from .. import tools as toolemu
 from ..accounts import AccountPool, AccountPoolBusy, DeepSeekAccount, account_lock
 from ..config import settings
 from ..deepseek.client import DeepSeekClient, DeepSeekError, DeepSeekSession
+from ..deepseek.models import MODEL_ALIASES, MODEL_TYPE, WebModel, advertised_models
 from ..deepseek.stream import IncrementalSSE, MessageReconstructor
 from ..qwen import api as qwen_api
 from ..qwen.accounts import QwenAccount
@@ -38,14 +39,6 @@ from .messages import create_messages_router
 from .responses import create_responses_router
 
 log = logging.getLogger("freetokenapi.api")
-
-MODEL_TYPE_BY_NAME = {
-    "deepseek-v4-flash": "default",
-    "deepseek-v4-pro": "expert",
-    "deepseek-v4-vision": "vision",
-}
-
-REASONING_SUFFIXES = ("-thinking",)
 
 QWEN_DEFAULT_MODELS = [
     {
@@ -133,7 +126,7 @@ class FileSpec(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model: str = Field(default="deepseek-v4-flash")
+    model: str = Field(default="deepseek-web")
     messages: list[ChatMessage] = Field(default_factory=list)
     stream: bool = False
     temperature: float | None = None
@@ -271,6 +264,7 @@ async def lifespan(app: FastAPI):
                         ttl=settings.session_ttl,
                         store=deepseek_session_store,
                         stable_id=_token_stable_id(token),
+                        model_config_ttl=settings.model_config_ttl,
                     )
                 )
             log.info("deepseek accounts ready: %d", len(accounts))
@@ -302,6 +296,7 @@ async def lifespan(app: FastAPI):
             )
         else:
             app.state.pool = None
+        await _deepseek_model_configs(app.state.pool)
         if qwen_accounts:
             app.state.qwen_pool = AccountPool(
                 qwen_accounts,
@@ -391,7 +386,7 @@ async def root():
         "api": "/v1",
         "adapter_features": [
             "responses_namespace_tools", "messages_inline_instructions", "chat_completions_developer",
-            "qwen_chat_attachments", "native_web_search", "agent_tool_continuation",
+            "qwen_chat_attachments", "native_web_search", "agent_tool_continuation", "deepseek_model_configs",
         ],
     }
 
@@ -491,6 +486,7 @@ async def add_tokens(tokens: dict) -> dict:
             ttl=settings.session_ttl,
             store=ds_store,
             stable_id=_token_stable_id(token),
+            model_config_ttl=settings.model_config_ttl,
         )
         if pool is None:
             pool = AccountPool(
@@ -503,6 +499,10 @@ async def add_tokens(tokens: dict) -> dict:
             app.state.pool = pool
         else:
             pool.add_account(acct)
+        try:
+            await acct.model_config.get()
+        except DeepSeekError as exc:
+            _handle_account_error(acct, exc)
         added_ds += 1
         log.info("hot-added deepseek token (total accounts: %d)", len(pool.accounts))
 
@@ -713,7 +713,7 @@ def _collect_attachments(req: ChatCompletionRequest) -> list[Attachment]:
     return attachments
 
 
-def _validate_attachments(attachments: list[Attachment], model_type: str) -> None:
+def _validate_attachments(attachments: list[Attachment]) -> None:
     if not attachments:
         return
     if len(attachments) > MAX_FILES_PER_REQUEST:
@@ -723,10 +723,6 @@ def _validate_attachments(attachments: list[Attachment], model_type: str) -> Non
             raise HTTPException(400, "empty attachments are not supported")
         if len(att.data) > MAX_FILE_SIZE:
             raise HTTPException(400, f"file {att.name} exceeds 100 MB limit")
-    if model_type == "expert":
-        raise HTTPException(400, "deepseek-v4-pro does not support file attachments")
-    if model_type == "vision" and any(not att.is_image for att in attachments):
-        raise HTTPException(400, "deepseek-v4-vision accepts images only")
 
 
 async def _fresh_pow_upload_headers(account) -> dict:
@@ -783,20 +779,13 @@ async def _upload_qwen_attachments(account, attachments: list[Attachment]) -> li
 
 
 def _resolve_model(model: str) -> str:
-    model_type = MODEL_TYPE_BY_NAME.get(model)
-    if model_type is not None:
-        return model_type
-    for suffix in REASONING_SUFFIXES:
-        if model.endswith(suffix):
-            base_type = MODEL_TYPE_BY_NAME.get(model[: -len(suffix)])
-            if base_type is not None:
-                return base_type
-            break
-    raise HTTPException(404, f"Unknown model: {model}")
+    if model not in MODEL_ALIASES:
+        raise HTTPException(404, f"Unknown model: {model}. Use deepseek-web or deepseek-web-thinking for DeepSeek.")
+    return MODEL_TYPE
 
 
 def _is_reasoning_model(model: str) -> bool:
-    return any(model.endswith(suffix) for suffix in REASONING_SUFFIXES)
+    return MODEL_ALIASES.get(model, False)
 
 
 def _finish_reason(status: Any) -> str:
@@ -846,29 +835,33 @@ async def usage_stats() -> dict:
     return tracker.snapshot()
 
 
+async def _deepseek_model_configs(pool: AccountPool | None) -> tuple[dict[int, WebModel], list[DeepSeekError]]:
+    if pool is None:
+        return {}, []
+    accounts = list(pool.healthy)
+    results = await asyncio.gather(*(account.model_config.get() for account in accounts), return_exceptions=True)
+    models: dict[int, WebModel] = {}
+    errors: list[DeepSeekError] = []
+    for account, result in zip(accounts, results):
+        if isinstance(result, DeepSeekError):
+            _handle_account_error(account, result)
+            errors.append(result)
+        elif isinstance(result, BaseException):
+            raise result
+        elif result is not None and not account.broken:
+            models[account.index] = result
+    return models, errors
+
+
+def _model_config_failure(errors: list[DeepSeekError]) -> HTTPException:
+    status = 504 if errors and all(error.biz_code == 504 for error in errors) else 502
+    return HTTPException(status, "DeepSeek model configuration is unavailable; retry after the refresh cooldown")
+
+
 @app.get("/v1/models")
 async def list_models() -> dict:
-    models: list[dict] = []
-    for name, model_type in MODEL_TYPE_BY_NAME.items():
-        models.append(
-            {
-                "id": name,
-                "object": "model",
-                "created": 0,
-                "owned_by": "deepseek",
-                "model_type": model_type,
-            }
-        )
-        for suffix in REASONING_SUFFIXES:
-            models.append(
-                {
-                    "id": f"{name}{suffix}",
-                    "object": "model",
-                    "created": 0,
-                    "owned_by": "deepseek",
-                    "model_type": model_type,
-                }
-            )
+    catalog, errors = await _deepseek_model_configs(getattr(app.state, "pool", None))
+    models = advertised_models(list(catalog.values()))
     qwen_models: list[dict] = getattr(app.state, "qwen_models", [])
     for model in qwen_models:
         models.append(
@@ -881,6 +874,8 @@ async def list_models() -> dict:
                 "model_type": model.get("model_type", "chat"),
             }
         )
+    if not models and errors:
+        raise _model_config_failure(errors)
     return {"object": "list", "data": models}
 
 
@@ -906,8 +901,10 @@ async def _human_delay() -> None:
 def _resolve_provider(model: str) -> str:
     if model.startswith("qwen"):
         return "qwen"
-    if model in MODEL_TYPE_BY_NAME or model.startswith("deepseek"):
+    if model in MODEL_ALIASES:
         return "deepseek"
+    if model.startswith("deepseek"):
+        _resolve_model(model)
     qwen_models = getattr(app.state, "qwen_models", [])
     for m in qwen_models:
         if m.get("id") == model:
@@ -977,8 +974,10 @@ async def image_generations(req: ImageGenerationRequest) -> dict:
     }
 
 
-async def _acquire_account(pool: AccountPool, session_id: str | None):
+async def _acquire_account(pool: AccountPool, session_id: str | None, allowed_indices: set[int] | None = None):
     try:
+        if allowed_indices is not None:
+            return await pool.acquire(session_id, settings.acquire_timeout, allowed_indices=allowed_indices)
         return await pool.acquire(session_id, settings.acquire_timeout)
     except AccountPoolBusy:
         raise HTTPException(429, "all accounts are busy, try again later") from None
@@ -994,21 +993,26 @@ async def _acquire_and_build(
     pool: AccountPool,
     req: ChatCompletionRequest,
     reuse_kwargs: dict[str, Any] | None = None,
+    allowed_indices: set[int] | None = None,
 ) -> tuple[Any, str | None, tuple[str, ...], str, bool]:
+    selection = {"allowed_indices": allowed_indices} if allowed_indices is not None else {}
     context_seq = toolemu.context_sequence(req.messages, user=getattr(req, "user", None))
     interleaved = toolemu.has_interleaved_system(req.messages)
     if interleaved:
         # A later instruction may change how earlier turns should be read.
         # Do not append a partial/duplicated transcript to a cached web session.
-        account, _ = await _acquire_account(pool, None)
+        account, _ = await _acquire_account(pool, None, **selection)
         existing_sid = None
     elif req.session_id:
-        account, existing_sid = await _acquire_account(pool, req.session_id)
-        if existing_sid is None:
+        owner = pool.account_for_session(req.session_id) if allowed_indices is not None else None
+        account, existing_sid = await _acquire_account(pool, req.session_id, **selection)
+        if existing_sid is None and (allowed_indices is None or owner is None or owner is account):
+            # Preserve client-chosen session keys, but never reuse a different
+            # account's session when capability routing requires a new account.
             existing_sid = req.session_id
     else:
         cached_sid = pool.resolve_context(context_seq) if context_seq else None
-        account, existing_sid = await _acquire_account(pool, cached_sid)
+        account, existing_sid = await _acquire_account(pool, cached_sid, **selection)
     has_session = not interleaved and _can_reuse_session(account, existing_sid, **(reuse_kwargs or {}))
     try:
         prompt, tool_mode = toolemu.build_prompt(
@@ -1107,10 +1111,26 @@ async def _chat_completions_deepseek(req: ChatCompletionRequest) -> Any:
     thinking = req.thinking if req.thinking is not None else _is_reasoning_model(req.model)
     search = settings.search_enabled if req.search is None else req.search
 
-    account, existing_sid, context_seq, prompt, tool_mode = await _acquire_and_build(pool, req)
-
     attachments = _collect_attachments(req)
-    _validate_attachments(attachments, model_type)
+    _validate_attachments(attachments)
+    catalog, errors = await _deepseek_model_configs(pool)
+    if not catalog:
+        if errors:
+            raise _model_config_failure(errors)
+        raise HTTPException(503, "No account has an enabled, switchable DeepSeek default web model")
+    rejected = {index: model.rejection(thinking=thinking, search=search, attachments=attachments) for index, model in catalog.items()}
+    eligible = {index for index, reason in rejected.items() if reason is None}
+    if not eligible:
+        # An account whose configuration failed may support the requested
+        # capability. Do not incorrectly turn an upstream outage into a 400.
+        if errors:
+            raise _model_config_failure(errors)
+        detail = (
+            next(iter(rejected.values())) if len(set(rejected.values())) == 1
+            else "No single DeepSeek account supports this combination of thinking, search, and attachments"
+        )
+        raise HTTPException(400, detail)
+    account, existing_sid, context_seq, prompt, tool_mode = await _acquire_and_build(pool, req, allowed_indices=eligible)
     ref_file_ids = None
     if attachments:
         # Keep a proof and its upload together on the account, just like chat
@@ -1166,7 +1186,7 @@ async def _chat_completions_qwen(req: ChatCompletionRequest) -> Any:
     search = settings.search_enabled if req.search is None else req.search
 
     attachments = _collect_attachments(req)
-    _validate_attachments(attachments, "qwen")
+    _validate_attachments(attachments)
     account, existing_sid, context_seq, prompt, tool_mode = await _acquire_and_build(pool, req, {"model": req.model})
     files = await _upload_qwen_attachments(account, attachments) if attachments else None
 

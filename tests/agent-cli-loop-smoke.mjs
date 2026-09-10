@@ -9,7 +9,7 @@ import path from "node:path";
 const option = name => { const i = process.argv.indexOf(name); return i < 0 ? undefined : process.argv[i + 1]; };
 const client = option("--client") || "claude";
 const api = option("--api") || "anthropic-messages";
-const model = option("--model") || "deepseek-v4-flash-thinking";
+const model = option("--model") || "deepseek-web-thinking";
 const base = new URL(option("--api-base"));
 assert.ok(["127.0.0.1", "localhost", "[::1]"].includes(base.hostname) && ["http:", "https:"].includes(base.protocol));
 assert.ok(["claude", "pi"].includes(client));

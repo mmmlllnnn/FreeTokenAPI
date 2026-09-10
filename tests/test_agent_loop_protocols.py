@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from deepseek_fixtures import model_configs
 from fastapi.testclient import TestClient
 
 from freetokenapi.accounts import AccountPool, DeepSeekAccount
@@ -57,7 +58,7 @@ def setup_backend(monkeypatch, provider, replies=REPLIES, interrupted=False, par
         return web_response(provider, replies[index], index + 1, interrupted, partial_error)
 
     upstream = SimpleNamespace(
-        completion=AsyncMock(side_effect=completion),
+        completion=AsyncMock(side_effect=completion), get_model_configs=AsyncMock(return_value=model_configs()),
         create_session=AsyncMock(return_value=DeepSeekSession(id="web-task")),
         create_chat=AsyncMock(return_value="web-task"), create_pow_challenge=AsyncMock(return_value={}),
         stop_stream=AsyncMock(), rename_session=AsyncMock(), update_chat=AsyncMock(),
@@ -76,7 +77,7 @@ def setup_backend(monkeypatch, provider, replies=REPLIES, interrupted=False, par
 
 
 def request_body(protocol, provider, stream):
-    model = "deepseek-v4-flash" if provider == "deepseek" else "qwen3.8-max"
+    model = "deepseek-web" if provider == "deepseek" else "qwen3.8-max"
     body = {"model": model, "stream": stream}
     initial = [{"role": "user", "content": "Read source.txt, write report.txt, then read it to verify the saved content."}]
     if protocol == "messages":

@@ -519,6 +519,7 @@ def test_actual_provider_pipeline_preserves_inline_instructions_and_tools(monkey
     web_sse = (DS_TOOL_SSE if provider == "deepseek" else QWEN_TOOL_SSE).replace("get_weather", name)
     plain_sse = DS_PLAIN_SSE if provider == "deepseek" else QWEN_TOOL_SSE.replace(dumps(TOOL_JSON), dumps("The weather is sunny."))
     account, pool = FakeAccount([web_sse, plain_sse]), MagicMock()
+    pool.healthy = [account]
     account.sessions.can_reuse.return_value = True
     pool.acquire = AsyncMock(return_value=(account, "stale_session"))
     monkeypatch.setattr(api.app.state, "pool", pool, raising=False)
@@ -571,7 +572,8 @@ def test_actual_provider_pipeline_preserves_inline_instructions_and_tools(monkey
     assert "User: Original weather question\nSystem: Later client instruction" in sent["prompt"]
     assert name in sent["prompt"]
     assert sent["thinking_enabled" if provider == "deepseek" else "thinking"] is False
-    pool.acquire.assert_awaited_once_with(None, api.settings.acquire_timeout)
+    selection = {"allowed_indices": {account.index}} if provider == "deepseek" else {}
+    pool.acquire.assert_awaited_once_with(None, api.settings.acquire_timeout, **selection)
     pool.resolve_context.assert_not_called()
     assert account.sessions.obtain.await_args.args[0] is None
     assert account.sem._value == 1

@@ -3,9 +3,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from deepseek_fixtures import model_configs
 
 import freetokenapi.api.openai as openai_mod
 from freetokenapi.api.openai import ChatMessage, _collect_non_stream, _stream_openai
+from freetokenapi.deepseek.models import ModelConfigCache
 
 BUSY_SSE = (
     "event: ready\n"
@@ -67,6 +69,8 @@ class FakeAccount:
         self.index = 0
         self.broken = False
         self.client = MagicMock()
+        self.client.get_model_configs = AsyncMock(return_value=model_configs())
+        self.model_config = ModelConfigCache(self.client)
         self.client.completion = AsyncMock(side_effect=[FakeResp(s) for s in sse_list])
         self.client.create_pow_challenge = AsyncMock(return_value={})
         self.pow = MagicMock()
@@ -97,7 +101,7 @@ def _args(acct, pool=None, existing_sid: str | None = "s1"):
         "existing_sid": existing_sid,
         "lock": acct.sem,
         "prompt": "x",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-web",
         "model_type": "default",
         "thinking": False,
         "search": False,
@@ -321,12 +325,8 @@ async def test_stream_full_consumption_does_not_stop_upstream():
     acct.client.stop_stream.assert_not_awaited()
 
 
-def test_model_type_mapping():
-    assert openai_mod.MODEL_TYPE_BY_NAME == {
-        "deepseek-v4-flash": "default",
-        "deepseek-v4-pro": "expert",
-        "deepseek-v4-vision": "vision",
-    }
+def test_model_aliases():
+    assert openai_mod.MODEL_ALIASES == {"deepseek-web": False, "deepseek-web-thinking": True}
 
 
 async def test_explicit_search_is_forwarded_without_silent_model_gating():
@@ -340,7 +340,9 @@ async def test_explicit_search_is_forwarded_without_silent_model_gating():
     openai_mod._collect_non_stream = fake_collect
     try:
         pool = MagicMock()
-        pool.acquire = AsyncMock(return_value=(FakeAccount([OK_SSE]), None))
+        account = FakeAccount([OK_SSE])
+        pool.healthy = [account]
+        pool.acquire = AsyncMock(return_value=(account, None))
         openai_mod.app.state.pool = pool
 
         async def run(model, search, thinking):
@@ -355,53 +357,33 @@ async def test_explicit_search_is_forwarded_without_silent_model_gating():
             )
             await openai_mod._chat_completions_deepseek(req)
 
-        await run("deepseek-v4-flash", search=True, thinking=None)
+        await run("deepseek-web", search=True, thinking=None)
         assert captured["model_type"] == "default"
         assert captured["search"] is True
         assert captured["thinking"] is False
 
-        await run("deepseek-v4-pro", search=True, thinking=None)
-        assert captured["model_type"] == "expert"
+        await run("deepseek-web", search=True, thinking=False)
+        assert captured["model_type"] == "default"
         assert captured["search"] is True
         assert captured["thinking"] is False
 
-        await run("deepseek-v4-pro-thinking", search=True, thinking=None)
-        assert captured["model_type"] == "expert"
+        await run("deepseek-web-thinking", search=True, thinking=None)
+        assert captured["model_type"] == "default"
         assert captured["search"] is True
         assert captured["thinking"] is True
 
-        await run("deepseek-v4-vision", search=True, thinking=True)
-        assert captured["model_type"] == "vision"
+        await run("deepseek-web", search=True, thinking=True)
+        assert captured["model_type"] == "default"
         assert captured["search"] is True
         assert captured["thinking"] is True
     finally:
         openai_mod._collect_non_stream = orig
 
 
-def test_pro_rejects_all_files():
+def test_shared_attachment_validation_accepts_text_and_images():
     from freetokenapi.api.openai import Attachment, _validate_attachments
 
-    with pytest.raises(Exception) as excinfo:
-        _validate_attachments([Attachment(b"x", "a.txt", "text/plain", False)], "expert")
-    exc = excinfo.value
-    assert isinstance(exc, openai_mod.HTTPException)
-    assert exc.status_code == 400
-
-
-def test_vision_rejects_text_files():
-    from freetokenapi.api.openai import Attachment, _validate_attachments
-
-    with pytest.raises(Exception) as excinfo:
-        _validate_attachments([Attachment(b"x", "a.txt", "text/plain", False)], "vision")
-    exc = excinfo.value
-    assert isinstance(exc, openai_mod.HTTPException)
-    assert exc.status_code == 400
-
-
-def test_vision_accepts_images():
-    from freetokenapi.api.openai import Attachment, _validate_attachments
-
-    _validate_attachments([Attachment(b"x", "a.png", "image/png", True)], "vision")
+    _validate_attachments([Attachment(b"x", "a.txt", "text/plain", False), Attachment(b"x", "a.png", "image/png", True)])
 
 
 def test_too_many_files_rejected():
@@ -413,7 +395,7 @@ def test_too_many_files_rejected():
 
     many = [Attachment(b"x", f"{i}.txt", "text/plain", False) for i in range(MAX_FILES_PER_REQUEST + 1)]
     with pytest.raises(Exception) as excinfo:
-        _validate_attachments(many, "default")
+        _validate_attachments(many)
     exc = excinfo.value
     assert isinstance(exc, openai_mod.HTTPException)
     assert exc.status_code == 400
@@ -427,7 +409,7 @@ def test_collect_attachments_from_image_url_and_files():
     img_b64 = b64.b64encode(b"pngdata").decode()
     file_b64 = b64.b64encode(b"hello").decode()
     req = SimpleNamespace(
-        model="deepseek-v4-flash",
+        model="deepseek-web",
         messages=[
             ChatMessage(
                 role="user",
