@@ -1,12 +1,20 @@
 # FreeTokenAPI
 
-**版本 2.0.0** · [English](README.md) · [更新记录](CHANGELOG.md)
+**版本 2.0.1** · [English](README.md) · [更新记录](CHANGELOG.md)
 
-把你自己的 **DeepSeek / Qwen 网页账号**接入本地 API，提供 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种兼容接口，支持流式回复、客户端工具调用、附件和网页后端原生搜索。
+FreeTokenAPI 是一个**轻量化本地 API 适配器**，把你自己的 **DeepSeek / Qwen 网页账号**接入本地 API，提供 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种兼容接口，支持流式回复、客户端工具调用、附件和网页后端原生搜索。
 
 **推荐客户端：[Pi Agent](https://github.com/earendil-works/pi)，可通过 [CC Switch](https://github.com/farion1231/cc-switch) 配置。**
 
 > 这是非官方网页服务适配器，不是厂商官方 API。请使用自己的账号并遵守上游服务条款。“免费”不代表无限额度、永久稳定或不受限流；模型能力和权限以网页账号实际情况为准。
+
+## 轻量化设计
+
+- 本地运行一个 Python API 服务，不依赖独立数据库服务、Docker 部署或浏览器自动化服务。
+- 无需下载模型权重或部署 GPU 推理环境：模型生成和原生搜索由网页后端完成，本地工具仍由 Agent 客户端执行。
+- 可选的 Pi 附件扩展只使用 Node.js 内置模块，不修改 Pi 的安装包。
+
+轻量化不等于零依赖、零开销：DeepSeek 仍需要 Node.js/WASM 完成必要的 PoW，上传与缓存也会按文件大小占用资源。
 
 ## 快速开始
 
@@ -222,6 +230,8 @@ Qwen 使用真实网页上传链路：申请临时上传凭据 → 上传对象�
 
 DeepSeek Web 使用网页文件上传接口及 PoW，必要时等待文件解析完成，再把 `ref_file_ids` 传给生成请求。上传前按所选账号的配置检查文件格式、数量、大小、视觉能力以及附件与搜索是否冲突。
 
+DeepSeek 文件解析是异步任务。适配器按网页端的 **3 秒间隔**轮询，并为整批附件的上传、解析及重试设置独立的 **300 秒总预算**（`FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS`），不再把普通 HTTP 超时直接当作解析总时限。`FAILED` 不一定意味着文件有问题：官方网页把 `50404` 等解析错误码显示为“服务器繁忙”。这类错误保留原始解析错误码和可重试标记，以 HTTP 503 返回，而不是误报 HTTP 400。仅对上游明确允许重试的临时 `FAILED`，使用原字节、原模型和思考设置及新的 PoW 最多重新上传一次。内容拒绝、取消、空内容、超长内容及已知永久解析错误不自动重试；重试不重置总时限，失败文件也不会传入生成请求。上游持续繁忙时仍需稍后再试，客户端不能保证后端始终可用。
+
 | API | 图片格式 | 文件格式 |
 | --- | --- | --- |
 | Chat Completions | `image_url` 中放 base64 data URI | `file`，内含 `file.filename`、`file.file_data` |
@@ -307,6 +317,7 @@ Responses 历史仅在进程内存中，可过期或被淘汰；重启后旧 `pr
 | `FREETOKENAPI_HOST` | `127.0.0.1` | 仅建议回环监听 |
 | `FREETOKENAPI_PORT` | `8000` | 端口 |
 | `FREETOKENAPI_TIMEOUT` | `60` | 上游 HTTP 超时，不是整次生成总时限 |
+| `FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS` | `300` | DeepSeek 整批附件准备总时限，包含有限重试 |
 | `FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS` | `300` | 每账号 DeepSeek 能力缓存有效秒数；`0` 每次刷新 |
 | `FREETOKENAPI_SEARCH_ENABLED` | `0` | 默认原生搜索开关 |
 | `FREETOKENAPI_CACHE_DIR` | 系统临时目录下 `freetokenapi` | 会话、上下文和用量文件 |
@@ -334,6 +345,7 @@ Pi 的用量显示会读取 API 的 `usage`。关闭服务端独立账本不会�
 
 ## 常见问题
 
+- **DeepSeek 附件 `FAILED`**：查看原始解析错误码与 `retryable`。例如 `50404` 表示上游繁忙，不等于 PDF 无效。更新后重启服务，根接口应包含 `deepseek_file_parse_recovery`。持续繁忙需等待；确实解析较慢时才调整独立附件总时限。
 - **Pi / Claude Code 做一步就停，或打印调用但未执行**：更新后重启服务，确认根接口有 `agent_tool_continuation`；新开会话并保持所需客户端工具启用。检查权限拒绝、上游错误，不要靠关闭安全限制解决。
 - **Pi 提示 422 / no body**：更新后先重启旧服务进程。本版已接收 developer 和常见 thinking 格式，并返回协议化校验错误；不要靠关闭校验掩盖问题。
 - **图片没发送或不识别**：检查 Pi 模型是否声明 `image`、模型权限、文件格式及完整性；极小、损坏、不受支持的文件仍可能被上游拒绝。
@@ -358,6 +370,8 @@ Windows 改用 `.venv\Scripts\python.exe`。大多数测试模拟上游，不需
 CI 在 Windows、macOS、Linux 上使用 Node.js 24 执行离线测试，并包含 Python 3.10 兼容性任务。CI 不接收网页登录 Token，也不运行需要账号的在线冒烟脚本。Git 忽略 `.env`、虚拟环境、客户端本地配置、缓存及日志；只发布不含凭据的 `.env.example`。
 
 ### 验证范围
+
+2.0.1 使用生成 PDF 复现了可重试的解析繁忙错误，并验证了生成版 12 页 PDF 解析成功，以及真实 API 通过原生附件读出仅存在于文件中的测试标记。这些检查没有上传用户文档。有限重试与禁止重试条件有三种接口的离线覆盖；上游可用性及具体文档的解析兼容性仍可能影响结果。
 
 2.0 新增每账号模型目录、TTL/失败恢复、旧 ID 拒绝及能力路由测试；另以一次匿名只读请求核对当前官方模型配置与缓存，并用新模型 ID 在真实 Pi CLI 上通过三种协议完成模拟后端的 PDF/工具往返检查。以下旧版在线 CLI 结果描述传输与工具层，不代表已用配置好的账号完成 2.0 在线生成测试。
 

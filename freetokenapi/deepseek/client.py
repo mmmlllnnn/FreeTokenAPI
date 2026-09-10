@@ -45,6 +45,53 @@ class DeepSeekError(Exception):
         self.biz_msg = biz_msg
 
 
+# Matches the public web client's file-parser error translations. These are
+# parser codes, NOT authentication/business codes returned by other endpoints.
+FILE_PARSE_BUSY_CODES = {50200, 50201, 50202, 50300, 50400, 50401, 50402, 50403, 50404}
+FILE_PARSE_NO_TEXT_CODES = {40000, 40001, 40002, 40009}
+FILE_PARSE_DOCUMENT_CODES = {40003, 40004, 40006, 40007, 40008}
+FILE_PARSE_POLL_INTERVAL = 3.0
+
+
+class DeepSeekFileParseError(DeepSeekError):
+    """Preserve parser failure details without exposing signed URLs or file data."""
+
+    def __init__(self, info: dict):
+        raw_status = info.get("status")
+        known_statuses = ("PENDING", "PARSING", "SUCCESS", "FAILED", "CONTENT_FILTER", "CONTENT_TOO_LONG", "CANCELLED", "CONTENT_EMPTY")
+        self.status = raw_status if isinstance(raw_status, str) and raw_status in known_statuses else "UNKNOWN"
+        raw_code = info.get("error_code")
+        self.error_code = raw_code if isinstance(raw_code, int) and not isinstance(raw_code, bool) else None
+        raw_retryable = info.get("retryable")
+        self.upstream_retryable = raw_retryable if isinstance(raw_retryable, bool) else None
+        rejected = self.status == "CONTENT_FILTER" or info.get("audit_result") == "reject"
+        permanent_code = self.error_code in FILE_PARSE_NO_TEXT_CODES | FILE_PARSE_DOCUMENT_CODES
+        self.can_retry = self.status == "FAILED" and self.upstream_retryable is True and not rejected and not permanent_code
+        busy = self.status == "FAILED" and self.error_code in FILE_PARSE_BUSY_CODES
+        if rejected:
+            status, message = 400, "DeepSeek rejected the attachment content"
+        elif self.status == "CONTENT_TOO_LONG":
+            status, message = 400, "DeepSeek attachment exceeds the parsed-content limit"
+        elif self.status == "CONTENT_EMPTY" or self.error_code in FILE_PARSE_NO_TEXT_CODES:
+            status, message = 400, "DeepSeek could not extract content from the attachment"
+        elif self.status == "CANCELLED":
+            status, message = 400, "DeepSeek attachment parsing was cancelled"
+        elif busy:
+            status, message = 503, "DeepSeek file parser is busy; try again later"
+        elif self.can_retry:
+            status, message = 503, "DeepSeek reported a retryable file-parsing failure; try again later"
+        elif permanent_code:
+            status, message = 400, "DeepSeek could not parse this document"
+        else:
+            status, message = 502, "DeepSeek attachment parsing failed"
+        details = [f"status={self.status}"]
+        if self.error_code is not None:
+            details.append(f"error_code={self.error_code}")
+        if self.upstream_retryable is not None:
+            details.append(f"retryable={str(self.upstream_retryable).lower()}")
+        super().__init__(status, f"{message} ({', '.join(details)})")
+
+
 class DeepSeekClient:
     def __init__(
         self,
@@ -223,8 +270,10 @@ class DeepSeekClient:
         biz = self._biz(payload)
         return (biz or {}).get("files", []) if isinstance(biz, dict) else []
 
-    async def wait_for_file(self, info: dict, timeout: float = 60.0) -> dict:
+    async def wait_for_file(self, info: dict, timeout: float = 300.0) -> dict:
         """Match the web UI: do not submit PENDING/PARSING file references."""
+        if info.get("audit_result") == "reject":
+            raise DeepSeekFileParseError(info)
         if info.get("status") is None:
             return info  # Older responses did not expose a parsing status.
         file_id = info.get("id")
@@ -234,10 +283,12 @@ class DeepSeekClient:
         current = info
         while True:
             status = current.get("status")
+            if current.get("audit_result") == "reject":
+                raise DeepSeekFileParseError(current)
             if status == "SUCCESS":
                 return current
             if status in ("FAILED", "CONTENT_FILTER", "CONTENT_TOO_LONG", "CANCELLED", "CONTENT_EMPTY"):
-                raise DeepSeekError(400, f"DeepSeek attachment parsing failed ({status})")
+                raise DeepSeekFileParseError(current)
             if status not in ("PENDING", "PARSING"):
                 raise DeepSeekError(502, "DeepSeek returned an unknown attachment parsing status")
             remaining = deadline - time.monotonic()
@@ -254,7 +305,7 @@ class DeepSeekClient:
                 current = matching
                 if current.get("status") not in ("PENDING", "PARSING"):
                     continue
-            await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+            await asyncio.sleep(min(FILE_PARSE_POLL_INTERVAL, max(0.0, deadline - time.monotonic())))
 
     async def history_messages(self, chat_session_id: str) -> list[dict]:
         try:

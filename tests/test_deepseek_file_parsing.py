@@ -33,12 +33,12 @@ async def test_pending_file_waits_for_matching_success():
     client.fetch_files.assert_awaited_once_with(["f1"])
 
 
-@pytest.mark.parametrize("status", ["FAILED", "CONTENT_FILTER", "CONTENT_TOO_LONG", "CANCELLED", "CONTENT_EMPTY"])
-async def test_parse_failure_is_not_sent_to_generation(status):
+@pytest.mark.parametrize("status,code", [("FAILED", 502), ("CONTENT_FILTER", 400), ("CONTENT_TOO_LONG", 400), ("CANCELLED", 400), ("CONTENT_EMPTY", 400)])
+async def test_parse_failure_is_not_sent_to_generation(status, code):
     client = client_with_statuses([{"id": "f1", "status": status}])
     with pytest.raises(DeepSeekError) as error:
         await client.wait_for_file({"id": "f1", "status": "PARSING"})
-    assert error.value.biz_code == 400
+    assert error.value.biz_code == code
     assert status in error.value.biz_msg
 
 
@@ -77,10 +77,10 @@ async def test_api_upload_waits_before_returning_file_ids(monkeypatch):
     monkeypatch.setattr(api, "_fresh_pow_upload_headers", AsyncMock(return_value={"X-DS-PoW-Response": "fake"}))
     ids = await api._upload_attachments(account, [api.Attachment(b"test", "report.pdf", "application/pdf", False)], "default", True)
     assert ids == ["f1"]
-    client.wait_for_file.assert_awaited_once_with(pending, timeout=api.settings.timeout)
+    client.wait_for_file.assert_awaited_once_with(pending, timeout=api.settings.file_parse_timeout)
 
 
-@pytest.mark.parametrize("code,status", [(400, 400), (504, 504), (502, 502), (40001, 401)])
+@pytest.mark.parametrize("code,status", [(400, 400), (503, 503), (504, 504), (502, 502), (40001, 401)])
 async def test_api_returns_parse_errors_instead_of_generating(monkeypatch, code, status):
     client = SimpleNamespace(upload_file=AsyncMock(return_value={"id": "f1", "status": "PARSING"}), wait_for_file=AsyncMock(side_effect=DeepSeekError(code, "attachment parsing failed")))
     account = SimpleNamespace(client=client)

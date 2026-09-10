@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,8 @@ class Settings:
         qwen_tokens = [t.strip() for t in os.environ.get("QWEN_TOKENS", "").split(",") if t.strip()]
         self.qwen_tokens = qwen_tokens
         self.timeout = _env_float("FREETOKENAPI_TIMEOUT", 60.0)
+        parse_timeout = _env_float("FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS", 300.0)
+        self.file_parse_timeout = parse_timeout if math.isfinite(parse_timeout) and parse_timeout > 0 else 300.0
         self.search_enabled = os.environ.get("FREETOKENAPI_SEARCH_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
         self.acquire_timeout = _env_float_opt("FREETOKENAPI_ACQUIRE_TIMEOUT")
         self.model_config_ttl = _env_float("FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS", 300.0)

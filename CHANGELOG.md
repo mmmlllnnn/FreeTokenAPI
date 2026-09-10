@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.0.1 — 2026-09-10
+
+### Fixed
+
+- Preserve DeepSeek file-parser error codes and retryability. Provider-busy failures such as `50404` no longer appear as invalid-request HTTP 400 errors.
+- Retry an explicitly retryable temporary parser failure at most once, with the original attachment and request settings and a fresh proof. Permanent failures and content/audit rejection are not retried.
+- Separate the 300-second attachment-preparation deadline from the HTTP timeout; the single budget includes uploads and retries. Poll at the web UI's three-second interval.
+- Never generate from a failed file reference; add regression coverage across all three API formats.
+- Clarify the lightweight architecture and required runtime dependencies in both READMEs.
+
 ## 2.0.0 — 2026-09-10
 
 ### Breaking changes

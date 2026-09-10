@@ -1,12 +1,20 @@
 # FreeTokenAPI
 
-**Version 2.0.0** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
+**Version 2.0.1** · [简体中文](README.zh-CN.md) · [Changelog](CHANGELOG.md)
 
-Use your own **DeepSeek and Qwen web accounts** through a local API. FreeTokenAPI provides OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatibility, with streaming, client tool calls, attachments, and the web providers' native search.
+FreeTokenAPI is a **lightweight local API adapter** for your own **DeepSeek and Qwen web accounts**. It provides OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages compatibility, with streaming, client tool calls, attachments, and the web providers' native search.
 
 **Recommended client: [Pi Agent](https://github.com/earendil-works/pi), optionally configured through [CC Switch](https://github.com/farion1231/cc-switch).**
 
 > This is an unofficial web-service adapter, not an official OpenAI, Anthropic, DeepSeek, or Qwen API. Use your own accounts and follow the providers' terms. Availability, quotas, model capabilities, and rate limits still depend on the upstream service. “Free” does not mean unlimited or guaranteed access.
+
+## Lightweight by design
+
+- One local Python API service; no separate database server, Docker deployment, or browser-automation service is required.
+- No local model weights or GPU inference stack: generation and native search run on the web provider, while client tools run in your agent client.
+- The optional Pi attachment extension uses Node.js built-ins and does not modify Pi's installed package.
+
+Lightweight does not mean dependency-free or zero-overhead: DeepSeek still needs its Node.js/WASM proof-of-work runtime, and uploads/caches consume resources according to file size.
 
 ## Quick start
 
@@ -224,6 +232,8 @@ Qwen attachments are uploaded to the same web backend used by the browser: tempo
 
 DeepSeek Web uses its web file-upload endpoint with PoW, waits for file parsing when necessary, and passes `ref_file_ids` to generation. File types, upload limits, vision support, and attachment/search combinations are checked against the account's cached official capabilities before upload.
 
+DeepSeek parsing is asynchronous. The adapter polls at the web UI's three-second cadence and uses a separate **300-second budget for the entire attachment batch**, including uploads, parsing and retries (`FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS`). The HTTP timeout remains independent. A `FAILED` state is not necessarily a bad document: the official web client labels parser code `50404` and related codes as **server busy**. Such failures return HTTP 503 with the original parser code/retry flag, rather than a misleading HTTP 400. Only an explicitly retryable temporary `FAILED` state is re-uploaded, at most once, with unchanged bytes/model/thinking and a fresh PoW. Content rejection, cancellation, empty/oversized content and known permanent parsing errors are never automatically retried. The original deadline is not reset, and generation never receives a failed file reference. If the provider remains busy, retry later; no client-side fix can guarantee upstream availability.
+
 Supported inline request forms:
 
 | API | Image content part | File content part |
@@ -312,6 +322,7 @@ See [config.py](freetokenapi/config.py) for all settings. Common options:
 | `FREETOKENAPI_HOST` | `127.0.0.1` | Listen address; keep it on loopback |
 | `FREETOKENAPI_PORT` | `8000` | Listen port |
 | `FREETOKENAPI_TIMEOUT` | `60` | Upstream HTTP timeout in seconds, not a whole-generation deadline |
+| `FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS` | `300` | Total DeepSeek attachment-preparation budget, including bounded retries |
 | `FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS` | `300` | Per-account DeepSeek capability cache TTL; `0` disables successful-result caching |
 | `FREETOKENAPI_SEARCH_ENABLED` | `0` | Default native-search switch; explicit request values win |
 | `FREETOKENAPI_CACHE_DIR` | System temp directory / `freetokenapi` | Persistent session/context and usage files |
@@ -339,6 +350,7 @@ Pi's usage display reads the API's `usage` fields. Those fields and necessary to
 
 ## Troubleshooting
 
+- **DeepSeek attachment `FAILED`:** read the parser error code and retry flag. Codes such as `50404` indicate provider-side load, not necessarily an invalid PDF. Restart after updating and check for `deepseek_file_parse_recovery` at the root endpoint. Persistent server-busy errors require waiting; increase the separate preparation timeout only for legitimately slow parsing.
 - **Pi / Claude Code stops after one tool or prints a call without executing it:** restart the updated server and check for `agent_tool_continuation` at the root endpoint. Start a fresh conversation, keep the needed client tools enabled, and inspect permission denials or upstream errors rather than disabling safeguards.
 - **Pi reports `422 status code (no body)`:** restart an old server process after updating. This version accepts Pi's developer role and common thinking formats and returns OpenAI-shaped validation errors. Read the resulting error message rather than disabling validation.
 - **Images disappear:** verify the Pi model entry includes `image`, select a compatible model, and send a valid supported image. Tiny, corrupt, or unsupported files can still be rejected upstream.
@@ -363,6 +375,8 @@ Use `.venv\Scripts\python.exe` on Windows. Most tests mock the upstream and neve
 CI runs the offline suite on Windows, macOS, and Linux with Node.js 24, including a Python 3.10 compatibility job. It does not receive web login tokens or run the opt-in live smoke scripts. `.env`, virtual environments, local agent settings, caches, and logs are excluded from Git; only the blank `.env.example` is published.
 
 ### Verification scope
+
+Version 2.0.1 reproduced a retryable parser-busy error with a generated PDF, then verified successful parsing of a generated 12-page PDF and a real native-file question returning a marker contained only in the document. No user document was uploaded for those checks. The bounded retry and non-retry conditions have offline coverage through all three API formats; provider availability and document-specific parser support still apply.
 
 Version 2 adds account-specific model-catalog, TTL/failure recovery, legacy-ID rejection and capability-routing tests. The parser/cache were also checked with one anonymous, read-only request to the current official model configuration. Actual Pi CLI PDF/tool round-trips passed through all three protocols against a mock backend using the new model ID. Earlier live CLI results below describe the transport/tool layer; they are not a claim that version 2 was live-tested with a configured account.
 

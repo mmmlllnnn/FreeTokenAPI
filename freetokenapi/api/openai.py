@@ -25,7 +25,12 @@ from .. import __version__
 from .. import tools as toolemu
 from ..accounts import AccountPool, AccountPoolBusy, DeepSeekAccount, account_lock
 from ..config import settings
-from ..deepseek.client import DeepSeekClient, DeepSeekError, DeepSeekSession
+from ..deepseek.client import (
+    DeepSeekClient,
+    DeepSeekError,
+    DeepSeekFileParseError,
+    DeepSeekSession,
+)
 from ..deepseek.models import MODEL_ALIASES, MODEL_TYPE, WebModel, advertised_models
 from ..deepseek.stream import IncrementalSSE, MessageReconstructor
 from ..qwen import api as qwen_api
@@ -386,7 +391,7 @@ async def root():
         "api": "/v1",
         "adapter_features": [
             "responses_namespace_tools", "messages_inline_instructions", "chat_completions_developer",
-            "qwen_chat_attachments", "native_web_search", "agent_tool_continuation", "deepseek_model_configs",
+            "qwen_chat_attachments", "native_web_search", "agent_tool_continuation", "deepseek_model_configs", "deepseek_file_parse_recovery",
         ],
     }
 
@@ -634,6 +639,8 @@ async def _log_request_failures(request: Request, call_next):
 
 MAX_FILES_PER_REQUEST = 50
 MAX_FILE_SIZE = 100 * 1024 * 1024
+FILE_PARSE_MAX_RETRIES = 1
+FILE_PARSE_RETRY_DELAY = 3.0
 
 
 @dataclass
@@ -733,35 +740,62 @@ async def _fresh_pow_upload_headers(account) -> dict:
         raise HTTPException(_deepseek_status(exc), _deepseek_error_detail(exc)) from exc
 
 
-async def _upload_attachments(account, attachments: list[Attachment], model_type: str, thinking: bool) -> list[str]:
-    file_ids: list[str] = []
-    for att in attachments:
-        for attempt in range(2):
-            pow_headers = await _fresh_pow_upload_headers(account)
-            try:
-                info = await account.client.upload_file(
-                    att.data, att.name, att.content_type, model_type,
-                    thinking_enabled=thinking, pow_headers=pow_headers,
-                )
-                break
-            except DeepSeekError as exc:
-                if exc.biz_code == 40301 and attempt == 0:
-                    log.info("deepseek upload proof rejected; generating a new proof and retrying once")
-                    continue
-                _handle_account_error(account, exc)
-                raise HTTPException(_deepseek_status(exc), f"file upload failed: {exc}") from exc
+async def _upload_deepseek_file(account, attachment: Attachment, model_type: str, thinking: bool) -> dict:
+    for attempt in range(2):
+        pow_headers = await _fresh_pow_upload_headers(account)
         try:
-            if info.get("status") is not None:
-                info = await account.client.wait_for_file(info, timeout=settings.timeout)
+            return await account.client.upload_file(
+                attachment.data, attachment.name, attachment.content_type, model_type,
+                thinking_enabled=thinking, pow_headers=pow_headers,
+            )
         except DeepSeekError as exc:
+            if exc.biz_code == 40301 and attempt == 0:
+                log.info("deepseek upload proof rejected; generating a new proof and retrying once")
+                continue
             _handle_account_error(account, exc)
-            status = exc.biz_code if exc.biz_code in (400, 504) else _deepseek_status(exc)
-            raise HTTPException(status, f"file parsing failed: {exc}") from exc
-        file_id = info.get("id")
-        if not file_id:
-            raise HTTPException(502, f"file upload failed for {att.name}: no file id")
-        file_ids.append(file_id)
-    return file_ids
+            raise HTTPException(_deepseek_status(exc), f"file upload failed: {exc}") from exc
+    raise AssertionError("unreachable upload retry state")
+
+
+async def _upload_attachments(account, attachments: list[Attachment], model_type: str, thinking: bool) -> list[str]:
+    async def prepare() -> list[str]:
+        file_ids: list[str] = []
+        for attachment in attachments:
+            for attempt in range(FILE_PARSE_MAX_RETRIES + 1):
+                info = await _upload_deepseek_file(account, attachment, model_type, thinking)
+                try:
+                    if info.get("audit_result") == "reject":
+                        raise DeepSeekFileParseError(info)
+                    if info.get("status") is not None:
+                        info = await account.client.wait_for_file(info, timeout=settings.file_parse_timeout)
+                except DeepSeekFileParseError as exc:
+                    if exc.can_retry and attempt < FILE_PARSE_MAX_RETRIES:
+                        # The web UI retries by re-uploading the original File.
+                        # Keep its bytes, filename, model and thinking settings;
+                        # only the proof and resulting file reference are new.
+                        log.info("deepseek file parser requested a retry (error_code=%s); retrying once", exc.error_code)
+                        await asyncio.sleep(FILE_PARSE_RETRY_DELAY)
+                        continue
+                    _handle_account_error(account, exc)
+                    suffix = " after one automatic retry" if attempt else ""
+                    raise HTTPException(exc.biz_code, f"file parsing failed{suffix}: {exc.biz_msg}") from exc
+                except DeepSeekError as exc:
+                    _handle_account_error(account, exc)
+                    status = exc.biz_code if exc.biz_code in (400, 503, 504) else _deepseek_status(exc)
+                    raise HTTPException(status, f"file parsing failed: {exc}") from exc
+                file_id = info.get("id")
+                if not isinstance(file_id, str) or not file_id:
+                    raise HTTPException(502, f"file upload failed for {attachment.name}: no file id")
+                file_ids.append(file_id)
+                break
+        return file_ids
+
+    try:
+        # One budget covers the WHOLE attachment batch, including uploads,
+        # parsing, polling and retries. Retries must not restart this clock.
+        return await asyncio.wait_for(prepare(), timeout=settings.file_parse_timeout)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(504, "DeepSeek attachment preparation timed out; files may still be processing on the web backend") from exc
 
 
 async def _upload_qwen_attachments(account, attachments: list[Attachment]) -> list[dict]:

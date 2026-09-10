@@ -117,3 +117,10 @@ def test_model_config_ttl(settings_for):
     assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "15"}).model_config_ttl == 15
     assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "0"}).model_config_ttl == 0
     assert settings_for({"FREETOKENAPI_MODEL_CONFIG_TTL_SECONDS": "invalid"}).model_config_ttl == 300
+
+
+@pytest.mark.parametrize("value,expected", [("180", 180), ("0.5", 0.5), ("0", 300), ("-1", 300), ("nan", 300), ("inf", 300), ("bad", 300)])
+def test_file_parse_timeout_is_separate_and_bounded(settings_for, value, expected):
+    s = settings_for({"FREETOKENAPI_FILE_PARSE_TIMEOUT_SECONDS": value})
+    assert s.file_parse_timeout == expected
+    assert s.timeout == 60
